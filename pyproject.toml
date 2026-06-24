@@ -1,0 +1,19 @@
+[project]
+name = "gs-pino"
+version = "0.1.0"
+description = "Masked U-FNO/PINO surrogate for fixed-boundary Grad-Shafranov equilibria"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.23",
+  "torch>=2.0",
+  "matplotlib>=3.6",
+  "tqdm>=4.64",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+gs-pino-generate = "gs_pino.generate_dataset:main"
+gs-pino-train = "gs_pino.train:main"
+gs-pino-evaluate = "gs_pino.evaluate:main"

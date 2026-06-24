@@ -1,0 +1,36 @@
+# Practical end-to-end configuration for a usable masked U-FNO/PINO run.
+# This file is intentionally larger than configs/default.yaml and is meant for
+# real experiments once numpy/torch and the external GS solver are installed.
+data:
+  path: data/gs_fixed_boundary_practical.npz
+  n_samples: 4096
+  grid_size: [128, 128]
+  seed: 2026
+  params:
+    R0: [1.45, 1.95]
+    a: [0.30, 0.60]
+    kappa: [1.15, 2.05]
+    delta: [-0.55, 0.55]
+    Ip: [6.0e5, 2.0e6]
+    betap: [0.10, 1.20]
+    alpha_m: [0.75, 5.00]
+    alpha_n: [0.75, 5.00]
+model:
+  modes1: 24
+  modes2: 24
+  width: 64
+  layers: 5
+train:
+  epochs: 250
+  batch_size: 8
+  learning_rate: 5.0e-4
+  weight_decay: 1.0e-6
+  val_fraction: 0.10
+  test_fraction: 0.10
+  pde_weight: 0.02
+  bc_weight: 0.10
+  ip_weight: 0.0
+  output_dir: outputs/practical_run
+evaluate:
+  output_dir: outputs/practical_eval
+  max_plots: 24
