@@ -33,13 +33,18 @@ def lcfs_level(R: np.ndarray, Z: np.ndarray, R0: float, a: float, kappa: float, 
     return point_r / np.maximum(boundary_r, 1e-6)
 
 
-def geometry_channels(R: np.ndarray, Z: np.ndarray, params: dict[str, float]) -> dict[str, np.ndarray]:
-    """Compute mask/SDF/rho/theta channels used by data generation and training."""
-    # `rho` is the primary non-rectangular-domain descriptor.
+def geometry_channels(R: np.ndarray, Z: np.ndarray, params: dict[str, float],
+                      plasma_mask: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    """Compute mask/SDF/rho/theta channels used by data generation and training.
+
+    When `plasma_mask` is provided (e.g. from a real GS solver), it is used as
+    the in-LCFS mask in place of the Miller-based approximation.
+    """
+    # `rho` is the primary non-rectangular-domain descriptor (Miller proxy).
     rho = lcfs_level(R, Z, params["R0"], params["a"], params["kappa"], params["delta"])
 
-    # Binary mask isolates physically meaningful in-LCFS points.
-    mask = (rho <= 1.0).astype(np.float32)
+    # Binary mask: use solver's real LCFS mask when available.
+    mask = plasma_mask if plasma_mask is not None else (rho <= 1.0).astype(np.float32)
 
     # Signed-distance proxy is negative inside and positive outside.
     sdf = (rho - 1.0).astype(np.float32)

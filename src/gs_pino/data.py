@@ -31,18 +31,14 @@ def build_input(sample: dict[str, np.ndarray], param_mean: np.ndarray | None = N
     parameters are normalized then broadcast so every pixel knows the equilibrium
     setting it belongs to.
     """
-    # Coordinate grids and raw scalar parameters for this equilibrium case.
     R = sample["R"]
     Z = sample["Z"]
     params = sample["params"].astype(np.float32)
 
-    # Normalize scalar parameters with training-set statistics when provided.
     p = params if param_mean is None else (params - param_mean) / param_std
 
-    # Unpack the shape parameters needed for coordinate normalization.
     R0, a, kappa = params[0], params[1], params[2]
 
-    # Spatial channels: normalized coordinates plus LCFS-aware geometry features.
     channels = [
         ((R - R0) / a).astype(np.float32),
         (Z / a).astype(np.float32),
@@ -54,7 +50,6 @@ def build_input(sample: dict[str, np.ndarray], param_mean: np.ndarray | None = N
         np.cos(sample["theta"]).astype(np.float32),
     ]
 
-    # Broadcast each normalized scalar parameter into a constant image channel.
     channels.extend([np.full_like(R, value, dtype=np.float32) for value in p])
     return np.stack(channels, axis=0)
 
@@ -63,18 +58,23 @@ class GSDataset(Dataset):
     """PyTorch dataset backed by a generated GS `.npz` archive."""
 
     def __init__(self, path: str, indices: np.ndarray | None = None, param_norm: Normalization | None = None):
-        # Keep the npz handle open; numpy lazily reads compressed arrays on access.
         raw = np.load(path)
-        self.raw = raw
+        self.R = raw["R"]
+        self.Z = raw["Z"]
+        self.mask = raw["mask"]
+        self.sdf = raw["sdf"]
+        self.rho = raw["rho"]
+        self.theta = raw["theta"]
+        self.params = raw["params"]
+        self.psi_bar = raw["psi_bar"]
+        self.profile_params = raw.get("profile_params", np.zeros((raw["params"].shape[0], 2), dtype=np.float32))
+        self.axes = raw.get("axes", np.zeros((raw["params"].shape[0], 4), dtype=np.float32))
 
-        # Select a subset for train/validation/test, or all samples by default.
-        n = raw["params"].shape[0]
+        n = self.params.shape[0]
         self.indices = np.arange(n) if indices is None else indices
 
-        # Training dataset computes normalization; val/test reuse the same stats.
-        params = raw["params"]
         if param_norm is None:
-            self.param_norm = Normalization(params.mean(axis=0), params.std(axis=0) + 1e-6)
+            self.param_norm = Normalization(self.params.mean(axis=0), self.params.std(axis=0) + 1e-6)
         else:
             self.param_norm = param_norm
 
@@ -83,22 +83,38 @@ class GSDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, item: int):
-        """Return `(x, y, mask, sdf, params)` tensors for one sample."""
-        # Map local dataset position to the raw archive index.
+        """Return `(x, y, mask, sdf, params, metadata)` tensors for one sample.
+
+        metadata is a dict containing per-sample PDE information:
+          - R, Z : 2-D coordinate grids
+          - profile_params : [L, Beta0]
+          - psi_axis, psi_lcfs : boundary values for psiN conversion
+          - alpha_m, alpha_n : from scalar parameters
+        """
         i = int(self.indices[item])
 
-        # Gather only fields needed by `build_input` to keep the contract explicit.
-        sample = {key: self.raw[key][i] for key in ["R", "Z", "mask", "sdf", "rho", "theta", "params"]}
+        sample = {key: getattr(self, key)[i] for key in ["R", "Z", "mask", "sdf", "rho", "theta", "params"]}
 
-        # Build model input and target.  The target has a singleton channel axis.
         x = build_input(sample, self.param_norm.mean, self.param_norm.std)
-        y = self.raw["psi_bar"][i][None, ...].astype(np.float32)
+        y = self.psi_bar[i][None, ...].astype(np.float32)
 
-        # Mask/SDF are returned separately for loss functions and plotting.
-        mask = self.raw["mask"][i][None, ...].astype(np.float32)
-        sdf = self.raw["sdf"][i][None, ...].astype(np.float32)
-        params = self.raw["params"][i].astype(np.float32)
-        return torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(mask), torch.from_numpy(sdf), torch.from_numpy(params)
+        mask = self.mask[i][None, ...].astype(np.float32)
+        sdf = self.sdf[i][None, ...].astype(np.float32)
+        params = self.params[i].astype(np.float32)
+
+        # Per-sample metadata for PDE loss and integral constraints
+        metadata = {
+            "R": torch.from_numpy(self.R[i].astype(np.float32)),
+            "Z": torch.from_numpy(self.Z[i].astype(np.float32)),
+            "profile_params": torch.from_numpy(self.profile_params[i].astype(np.float32)),
+            "R0": float(params[0]),
+            "alpha_m": float(params[6]),
+            "alpha_n": float(params[7]),
+            "psi_axis": float(self.axes[i, 3]),
+            "psi_lcfs": float(self.axes[i, 2]),
+        }
+
+        return torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(mask), torch.from_numpy(sdf), torch.from_numpy(params), metadata
 
 
 def split_indices(n: int, val_fraction: float, test_fraction: float, seed: int = 0):

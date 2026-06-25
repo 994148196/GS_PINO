@@ -44,22 +44,29 @@ def _format_params(params: np.ndarray) -> str:
     return ", ".join(parts)
 
 
-def plot_case(path: Path, R: np.ndarray, Z: np.ndarray, true: np.ndarray, pred: np.ndarray, mask: np.ndarray, params: np.ndarray, rel_error: float) -> None:
+def plot_case(path: Path, R: np.ndarray, Z: np.ndarray, true: np.ndarray, pred: np.ndarray, mask: np.ndarray,
+               params: np.ndarray, rel_error: float, psi_lcfs: float, psi_axis: float) -> None:
     """Save true/prediction/error contours for one test equilibrium.
 
     The LCFS is drawn as a black contour, invalid outside-LCFS pixels are hidden,
     and the title includes all eight parameters so visual failures can be traced
     back to the sampled equilibrium settings.
     """
+    # 将 psi_bar 还原为真实 psi 值
+    dpsi = psi_axis - psi_lcfs
+    true_psi = true * dpsi + psi_lcfs
+    pred_psi = pred * dpsi + psi_lcfs
+    err_psi = pred_psi - true_psi
+
     # Hide non-physical exterior values so colorbars are controlled by plasma data.
-    err = np.where(mask > 0, pred - true, np.nan)
-    true = np.where(mask > 0, true, np.nan)
-    pred = np.where(mask > 0, pred, np.nan)
+    err_psi = np.where(mask > 0, err_psi, np.nan)
+    true_psi = np.where(mask > 0, true_psi, np.nan)
+    pred_psi = np.where(mask > 0, pred_psi, np.nan)
 
     # Three panels make it easy to compare solver truth, surrogate, and residual.
     fig, ax = plt.subplots(1, 3, figsize=(15, 4.4), constrained_layout=True)
     fig.suptitle(f"Relative L2={rel_error:.3e}\n{_format_params(params)}", fontsize=10)
-    for axis, data, title in zip(ax, [true, pred, err], ["true psi_bar", "pred psi_bar", "pred - true"]):
+    for axis, data, title in zip(ax, [true_psi, pred_psi, err_psi], ["true psi", "pred psi", "pred - true"]):
         im = axis.contourf(R, Z, data, levels=48)
         axis.contour(R, Z, mask, levels=[0.5], colors="k", linewidths=1.0)
         axis.set_xlabel("R")
@@ -135,7 +142,19 @@ def main() -> None:
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     test_indices = checkpoint.get("test_indices")
     dataset = GSDataset(args.data, test_indices, Normalization(checkpoint["param_mean"], checkpoint["param_std"]))
-    loader = DataLoader(dataset, batch_size=args.batch_size)
+
+    def _collate(batch):
+        x, y, mask, sdf, params, meta = zip(*batch)
+        return (
+            torch.stack([torch.as_tensor(item) for item in x]),
+            torch.stack([torch.as_tensor(item) for item in y]),
+            torch.stack([torch.as_tensor(item) for item in mask]),
+            torch.stack([torch.as_tensor(item) for item in sdf]),
+            torch.stack([torch.as_tensor(item) for item in params]),
+            list(meta),
+        )
+
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=_collate)
 
     # Use CUDA automatically when available; CPU keeps the workflow portable.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -146,7 +165,7 @@ def main() -> None:
     mse_values: list[float] = []
     rel_values: list[float] = []
     with torch.no_grad():
-        for x, y, mask, _sdf, _params in loader:
+        for x, y, mask, _sdf, _params, _meta in loader:
             pred = model(x.to(device)).cpu()
             mse_values.append(float(masked_mse(pred, y, mask)))
             rel_values.extend(rel_l2(pred, y, mask).numpy().tolist())
@@ -168,9 +187,14 @@ def main() -> None:
     # Save detailed comparison figures for the first few test cases.
     for local_idx in range(min(args.max_plots, len(dataset))):
         raw_idx = int(dataset.indices[local_idx])
-        x, y, mask, _sdf, params_tensor = dataset[local_idx]
+        x, y, mask, _sdf, params_tensor, meta = dataset[local_idx]
         with torch.no_grad():
             pred = model(x[None].to(device)).cpu().numpy()[0, 0]
+
+        # 获取 psi_lcfs 和 psi_axis 用于还原真实 psi 值
+        psi_lcfs = meta["psi_lcfs"]
+        psi_axis = meta["psi_axis"]
+
         plot_case(
             case_dir / f"case_{local_idx:03d}.png",
             raw["R"][raw_idx],
@@ -180,6 +204,8 @@ def main() -> None:
             mask.numpy()[0],
             params_tensor.numpy(),
             float(rel_array[local_idx]),
+            psi_lcfs,
+            psi_axis,
         )
 
 
