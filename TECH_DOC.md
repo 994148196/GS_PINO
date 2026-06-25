@@ -428,6 +428,7 @@ torch.save({
 | `--pde-weight` | 0.01 | PDE 残差损失权重 |
 | `--bc-weight` | 0.05 | 边界损失权重 |
 | `--ip-weight` | 0.0 | Ip 约束损失权重 |
+| `--clip-grad` | 1.0 | 梯度裁剪阈值 (0=禁用) |
 | `--seed` | 0 | 随机种子 |
 
 ### 8.3 evaluate
@@ -485,16 +486,43 @@ python -m gs_pino.evaluate --data data/gs_smoke.npz \
 
 ### Large 配置（984 训练样本，129×129 网格，200 epochs）
 
+#### 版本 1 — 基线 (旧)
+
 | 指标 | 值 |
 |------|-----|
 | 最佳验证损失 | 0.00085 |
 | 测试 masked MSE | 0.00014 |
-| 相对 L2 均值 | 2.3% |
-| 相对 L2 中位数 | 1.6% |
-| 相对 L2 P95 | 6.5% |
+| 相对 L2 均值 | 2.32% |
+| 相对 L2 中位数 | 1.62% |
+| 相对 L2 P95 | 6.54% |
 | 相对 L2 最大值 | 19.3% |
-| 训练时间 | ~46 min (CUDA) |
-| 数据集生成时间 | ~55 min (CPU) |
+| 训练稳定性 | epoch ~150 发散后恢复 |
+
+#### 版本 2 — 余弦退火 + 梯度裁剪 (改进)
+
+| 指标 | 值 | 提升 |
+|------|-----|------|
+| 最佳验证损失 | **0.00033** | 2.6× |
+| 测试 masked MSE | **0.000028** | 5.1× |
+| 相对 L2 均值 | **1.09%** | 2.1× |
+| 相对 L2 中位数 | **0.93%** | 1.7× |
+| 相对 L2 P95 | **1.73%** | 3.8× |
+| 相对 L2 最大值 | **7.97%** | 2.4× |
+| 训练稳定性 | 全程稳定下降 | ✓ |
+
+#### 运行命令
+
+```bash
+# 基线
+python -m gs_pino.train --data data/gs_large.npz --lr 1e-3 \
+    --epochs 200 --batch-size 16 --width 64 --modes1 32 --modes2 32 \
+    --layers 4 --pde-weight 0.01 --output-dir outputs/large
+
+# 改进版（余弦退火 + 梯度裁剪）
+python -m gs_pino.train --data data/gs_large.npz --lr 1e-3 --clip-grad 1.0 \
+    --epochs 200 --batch-size 16 --width 64 --modes1 32 --modes2 32 \
+    --layers 4 --pde-weight 0.01 --output-dir outputs/large_v2
+```
 
 ---
 

@@ -44,6 +44,7 @@ def run_epoch(
     bc_weight: float,
     ip_weight: float = 0.0,
     betap_weight: float = 0.0,
+    clip_grad: float = 0.0,
 ) -> dict[str, float]:
     """Run one train or validation epoch and return average losses for each component."""
     train = opt is not None
@@ -112,6 +113,8 @@ def run_epoch(
             if train:
                 opt.zero_grad()
                 loss.backward()
+                if clip_grad > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
                 opt.step()
 
             batch_size = x.shape[0]
@@ -145,6 +148,7 @@ def main() -> None:
     parser.add_argument("--pde-weight", type=float, default=0.01, help="Weight for GS PDE residual loss.")
     parser.add_argument("--bc-weight", type=float, default=0.05, help="Weight for LCFS boundary-band loss.")
     parser.add_argument("--ip-weight", type=float, default=0.0, help="Weight for Ip integral constraint (optional).")
+    parser.add_argument("--clip-grad", type=float, default=1.0, help="Gradient clipping max norm (0 = disable).")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for split/model initialization.")
     args = parser.parse_args()
 
@@ -187,17 +191,28 @@ def main() -> None:
     in_channels = train_ds[0][0].shape[0]
     model = UFNO2d(in_channels, args.modes1, args.modes2, args.width, args.layers).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
+
+    print(f"  Optimizer: AdamW, lr={args.lr}, weight_decay=1e-6")
+    print(f"  Scheduler: CosineAnnealingLR, T_max={args.epochs}")
+    if args.clip_grad > 0:
+        print(f"  Gradient clipping: max_norm={args.clip_grad}")
+    print()
 
     best = float("inf")
     history: list[dict] = []
     pbar = trange(args.epochs, desc="Training")
     for epoch in pbar:
-        train_losses = run_epoch(model, train_loader, opt, device, args.pde_weight, args.bc_weight, args.ip_weight)
+        train_losses = run_epoch(model, train_loader, opt, device, args.pde_weight, args.bc_weight, args.ip_weight, clip_grad=args.clip_grad)
         val_losses = run_epoch(model, val_loader, None, device, args.pde_weight, args.bc_weight, args.ip_weight) if len(val_ds) else train_losses
+
+        current_lr = scheduler.get_last_lr()[0]
+        scheduler.step()
 
         # 记录历史
         history.append({
             "epoch": epoch + 1,
+            "lr": current_lr,
             "train_data": train_losses["data"],
             "train_bc": train_losses["bc"],
             "train_pde": train_losses["pde"],
@@ -244,7 +259,7 @@ def plot_training_history(history: list[dict], output_dir: Path) -> None:
     """Generate training loss curves plot."""
     epochs = [h["epoch"] for h in history]
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
 
     # 总损失
     ax = axes[0, 0]
@@ -267,7 +282,7 @@ def plot_training_history(history: list[dict], output_dir: Path) -> None:
     ax.grid(alpha=0.3)
 
     # PDE 残差损失
-    ax = axes[1, 0]
+    ax = axes[0, 2]
     ax.plot(epochs, [h["train_pde"] for h in history], "b-", label="Train")
     ax.plot(epochs, [h["val_pde"] for h in history], "r--", label="Val")
     ax.set_xlabel("Epoch")
@@ -277,7 +292,7 @@ def plot_training_history(history: list[dict], output_dir: Path) -> None:
     ax.grid(alpha=0.3)
 
     # 边界损失
-    ax = axes[1, 1]
+    ax = axes[1, 0]
     ax.plot(epochs, [h["train_bc"] for h in history], "b-", label="Train")
     ax.plot(epochs, [h["val_bc"] for h in history], "r--", label="Val")
     ax.set_xlabel("Epoch")
@@ -285,6 +300,17 @@ def plot_training_history(history: list[dict], output_dir: Path) -> None:
     ax.set_title("Boundary Condition Loss")
     ax.legend()
     ax.grid(alpha=0.3)
+
+    # 学习率
+    ax = axes[1, 1]
+    ax.plot(epochs, [h.get("lr", 1e-3) for h in history], "g-")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Learning Rate")
+    ax.set_title("Learning Rate (Cosine Annealing)")
+    ax.grid(alpha=0.3)
+
+    # 右侧空白
+    axes[1, 2].axis("off")
 
     fig.savefig(output_dir / "training_curves.png", dpi=150)
     plt.close(fig)

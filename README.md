@@ -51,6 +51,7 @@ pip install -e .
 | `--pde-weight` | 0.01 | PDE 残差损失权重 |
 | `--bc-weight` | 0.05 | 边界损失权重 |
 | `--ip-weight` | 0.0 | Ip 约束损失权重 |
+| `--clip-grad` | 1.0 | 梯度裁剪阈值 (0=禁用) |
 
 ### evaluate
 
