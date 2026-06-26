@@ -225,3 +225,72 @@ def betap_constraint_loss(
     betap_pred = num / (den + 1e-30)
 
     return ((betap_pred - betap_target) ** 2 / (betap_target ** 2 + 1e-6)).mean()
+
+
+# ────────────────────────────────────────────────────────────────
+#  磁轴约束损失
+# ────────────────────────────────────────────────────────────────
+
+def axis_constraint_loss(
+    pred: torch.Tensor,
+    *,
+    R: torch.Tensor,
+    Z: torch.Tensor,
+    R_axis: torch.Tensor,
+    Z_axis: torch.Tensor,
+) -> torch.Tensor:
+    """Penalize deviation of psi_bar at the magnetic axis from the target value 1.
+
+    Uses bilinear interpolation on the uniform (R, Z) grid to evaluate
+    psi_bar at the exact (R_axis, Z_axis) coordinate.
+
+    Parameters
+    ----------
+    pred      : [B, 1, nr, nz]  predicted psi_bar
+    R, Z      : [B, nr, nz]     coordinate grids
+    R_axis    : [B]             magnetic axis R coordinate
+    Z_axis    : [B]             magnetic axis Z coordinate
+
+    Returns
+    -------
+    mean((psi_bar(R_axis, Z_axis) - 1.0) ** 2)
+    """
+    B, _, nr, nz = pred.shape
+    pred_s = pred.squeeze(1)  # [B, nr, nz]
+
+    # Grid spacing (uniform per sample)
+    dR = (R[:, 1, 0] - R[:, 0, 0])  # [B]
+    dZ = (Z[:, 0, 1] - Z[:, 0, 0])  # [B]
+
+    # Find fractional indices
+    i_frac = (R_axis - R[:, 0, 0]) / dR  # [B]
+    j_frac = (Z_axis - Z[:, 0, 0]) / dZ  # [B]
+
+    i0 = i_frac.floor().long().clamp(0, nr - 2)
+    i1 = i0 + 1
+    j0 = j_frac.floor().long().clamp(0, nz - 2)
+    j1 = j0 + 1
+
+    # Bilinear interpolation weights
+    wi = (i_frac - i0.float()).unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+    wj = (j_frac - j0.float()).unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+
+    # Gather 4 corner values
+    batch_idx = torch.arange(B, device=pred.device).unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+
+    v00 = pred_s[batch_idx, i0.view(B, 1, 1), j0.view(B, 1, 1)]  # [B, 1, 1]
+    v01 = pred_s[batch_idx, i0.view(B, 1, 1), j1.view(B, 1, 1)]
+    v10 = pred_s[batch_idx, i1.view(B, 1, 1), j0.view(B, 1, 1)]
+    v11 = pred_s[batch_idx, i1.view(B, 1, 1), j1.view(B, 1, 1)]
+
+    # Interpolate: (1-wi)*(1-wj)*v00 + wi*(1-wj)*v10 + (1-wi)*wj*v01 + wi*wj*v11
+    axis_pred = (
+        (1.0 - wi) * (1.0 - wj) * v00
+        + wi * (1.0 - wj) * v10
+        + (1.0 - wi) * wj * v01
+        + wi * wj * v11
+    )  # [B, 1, 1]
+
+    # 安全裁剪防止梯度爆炸
+    axis_pred = axis_pred.clamp(-5.0, 5.0)
+    return ((axis_pred - 1.0) ** 2).mean()

@@ -510,6 +510,21 @@ python -m gs_pino.evaluate --data data/gs_smoke.npz \
 | 相对 L2 最大值 | **7.97%** | 2.4× |
 | 训练稳定性 | 全程稳定下降 | ✓ |
 
+#### 版本 3 — 数据翻倍 + 低 LR + 梯度累积 (2024)
+
+数据集扩大到 1960 样本（由 2000 样本过滤得到，seed=42）。由于样本量增大，需要降低学习率防止梯度爆炸。
+同时使用梯度累积（accum_steps=2）在 batch-size=8 下模拟有效 batch-size=16。
+
+| 指标 | 值 | 相比 V2 提升 |
+|------|-----|-------------|
+| 最佳验证损失 | **0.000157** | 2.1× |
+| 测试 masked MSE | **0.000022** | 1.3× |
+| 相对 L2 均值 | **0.97%** | 1.1× |
+| 相对 L2 中位数 | **0.81%** | 1.1× |
+| 相对 L2 P95 | **1.74%** | 基本持平 |
+| 相对 L2 最大值 | **7.14%** | 1.1× |
+| 训练稳定性 | 全程稳定下降 | ✓ |
+
 #### 运行命令
 
 ```bash
@@ -522,6 +537,11 @@ python -m gs_pino.train --data data/gs_large.npz --lr 1e-3 \
 python -m gs_pino.train --data data/gs_large.npz --lr 1e-3 --clip-grad 1.0 \
     --epochs 200 --batch-size 16 --width 64 --modes1 32 --modes2 32 \
     --layers 4 --pde-weight 0.01 --output-dir outputs/large_v2
+
+# 数据翻倍版（梯度累积 + 低 LR）
+python -m gs_pino.train --data data/gs_large2k.npz --lr 5e-4 --clip-grad 1.0 \
+    --epochs 200 --batch-size 8 --accum-steps 2 --width 64 --modes1 32 --modes2 32 \
+    --layers 4 --pde-weight 0.01 --output-dir outputs/large_v3
 ```
 
 ---

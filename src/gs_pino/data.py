@@ -112,6 +112,8 @@ class GSDataset(Dataset):
             "alpha_n": float(params[7]),
             "psi_axis": float(self.axes[i, 3]),
             "psi_lcfs": float(self.axes[i, 2]),
+            "R_axis": float(self.axes[i, 0]),
+            "Z_axis": float(self.axes[i, 1]),
         }
 
         return torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(mask), torch.from_numpy(sdf), torch.from_numpy(params), metadata

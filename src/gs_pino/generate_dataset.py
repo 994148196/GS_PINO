@@ -39,78 +39,82 @@ def make_case_grid(R0: float, a: float, kappa: float, delta: float, nr: int, nz:
     return np.meshgrid(r, z, indexing="ij")
 
 
-def generate(out: str, n_samples: int, nr: int, nz: int, seed: int, rtol: float = 1e-5) -> None:
+def _solve_one(args: tuple) -> dict | None:
+    """Solve a single equilibrium. Used by parallel workers."""
+    params, nr, nz, rtol = args
+    try:
+        solver = GSSolverAdapter(nr=nr, nz=nz, rtol=rtol)
+        sol = solver.solve(params)
+        if sol is None:
+            return None
+        geom = geometry_channels(sol["R"], sol["Z"], params, plasma_mask=sol["plasma_mask"])
+
+        # 检查有效
+        if np.isnan(sol["psi_bar"]).any() or np.isinf(sol["psi_bar"]).any():
+            return None
+        if np.isnan(sol.get("profile_params", np.array([0.0, 0.0]))).any() or np.isinf(sol.get("profile_params", np.array([0.0, 0.0]))).any():
+            return None
+        if abs(sol["psi_axis"]) > 1e10 or abs(sol["psi_lcfs"]) > 1e10:
+            return None
+
+        return {
+            "R": sol["R"], "Z": sol["Z"],
+            "psi": sol["psi"], "psi_bar": sol["psi_bar"],
+            "mask": geom["mask"], "sdf": geom["sdf"],
+            "rho": geom["rho"], "theta": geom["theta"],
+            "params": np.array([params[name] for name in PARAM_NAMES], dtype=np.float32),
+            "axes": [sol["R_axis"], sol["Z_axis"], sol["psi_lcfs"], sol["psi_axis"]],
+            "profile_params": sol.get("profile_params", np.array([0.0, 0.0], dtype=np.float32)),
+        }
+    except Exception:
+        return None
+
+
+def generate(out: str, n_samples: int, nr: int, nz: int, seed: int, rtol: float = 1e-5, n_jobs: int = -1) -> None:
     """Generate a compressed `.npz` dataset with fields documented in PROJECT.md."""
 
-    # —— 选择求解器 ——
-    if _HAS_GSPACK:
-        print(f"  Using GSSolverAdapter (gspack2_TRAE real GS solver), rtol={rtol:.0e}.")
-        solver = GSSolverAdapter(nr=nr, nz=nz, rtol=rtol)
-        use_real_solver = True
-    else:
+    if not _HAS_GSPACK:
         print("  gspack2_TRAE not found; falling back to AnalyticFixedBoundarySolver.")
+        # 备用求解器 — 保持串行
+        rng = np.random.default_rng(seed)
         solver = AnalyticFixedBoundarySolver()
-        use_real_solver = False
+        arrays: dict[str, list[np.ndarray]] = {key: [] for key in ["R", "Z", "params", "psi", "psi_bar", "mask", "sdf", "rho", "theta"]}
+        axes: list[list[float]] = []
+        profile_params_list: list[np.ndarray] = []
 
-    rng = np.random.default_rng(seed)
-
-    arrays: dict[str, list[np.ndarray]] = {key: [] for key in ["R", "Z", "params", "psi", "psi_bar", "mask", "sdf", "rho", "theta"]}
-    axes: list[list[float]] = []
-    profile_params_list: list[np.ndarray] = []
-
-    n_failed = 0
-    for _ in trange(n_samples, desc="Generating"):
-        params = sample_params(rng)
-
-        if use_real_solver:
-            # 真正的 GS 求解器：创建自己的计算网格
-            sol = solver.solve(params)
-            if sol is None:
-                n_failed += 1
-                continue
-
-            R = sol["R"]   # (nr, nz)
-            Z = sol["Z"]   # (nr, nz)
-
-            # 使用求解器返回的真实 LCFS 掩码
-            geom = geometry_channels(R, Z, params, plasma_mask=sol["plasma_mask"])
-        else:
-            # 备用求解器：我们构造网格
+        for _ in trange(n_samples, desc="Generating"):
+            params = sample_params(rng)
             R, Z = make_case_grid(params["R0"], params["a"], params["kappa"], params["delta"], nr, nz)
             geom = geometry_channels(R, Z, params)
             sol = solver.solve(R, Z, params)
+            arrays["R"].append(R); arrays["Z"].append(Z)
+            arrays["params"].append(np.array([params[name] for name in PARAM_NAMES], dtype=np.float32))
+            arrays["psi"].append(sol["psi"]); arrays["psi_bar"].append(sol["psi_bar"])
+            for key in ["mask", "sdf", "rho", "theta"]:
+                arrays[key].append(geom[key])
+            axes.append([sol["R_axis"], sol["Z_axis"], sol["psi_lcfs"], sol["psi_axis"]])
+            profile_params_list.append(sol.get("profile_params", np.array([0.0, 0.0], dtype=np.float32)))
+    else:
+        print(f"  Using GSSolverAdapter (gspack2_TRAE real GS solver), rtol={rtol:.0e}.")
+        print(f"  Parallel generation with {n_jobs if n_jobs > 0 else 'all'} workers.")
 
-        # 检查 psi_bar 是否有 NaN 或 Inf
-        if np.isnan(sol["psi_bar"]).any() or np.isinf(sol["psi_bar"]).any():
-            n_failed += 1
-            continue
+        # 预生成所有参数
+        rng = np.random.default_rng(seed)
+        all_params = [sample_params(rng) for _ in range(n_samples)]
 
-        # 检查 profile_params 是否有 NaN 或 Inf
-        if np.isnan(sol.get("profile_params", np.array([0.0, 0.0]))).any() or np.isinf(sol.get("profile_params", np.array([0.0, 0.0]))).any():
-            n_failed += 1
-            continue
+        from joblib import Parallel, delayed
+        results = Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(_solve_one)((p, nr, nz, rtol)) for p in all_params
+        )
 
-        # 检查 psi_axis 和 psi_lcfs 是否异常大
-        if abs(sol["psi_axis"]) > 1e10 or abs(sol["psi_lcfs"]) > 1e10:
-            n_failed += 1
-            continue
+        valid = [r for r in results if r is not None]
+        n_failed = n_samples - len(valid)
+        if n_failed > 0:
+            print(f"  Warning: {n_failed} solves failed and were skipped.")
 
-        arrays["R"].append(R)
-        arrays["Z"].append(Z)
-        arrays["params"].append(np.array([params[name] for name in PARAM_NAMES], dtype=np.float32))
-
-        # 求解器已用 fix_bndry_zero=True，psi 中 LCFS=0
-        arrays["psi"].append(sol["psi"])
-        arrays["psi_bar"].append(sol["psi_bar"])
-
-        for key in ["mask", "sdf", "rho", "theta"]:
-            arrays[key].append(geom[key])
-
-        axes.append([sol["R_axis"], sol["Z_axis"], sol["psi_lcfs"], sol["psi_axis"]])
-        profile_params_list.append(sol.get("profile_params", np.array([0.0, 0.0], dtype=np.float32)))
-
-    if n_failed > 0:
-        print(f"  Warning: {n_failed} solves failed and were skipped.")
+        arrays = {key: [r[key] for r in valid] for key in ["R", "Z", "params", "psi", "psi_bar", "mask", "sdf", "rho", "theta"]}
+        axes = [r["axes"] for r in valid]
+        profile_params_list = [r["profile_params"] for r in valid]
 
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -120,6 +124,7 @@ def generate(out: str, n_samples: int, nr: int, nz: int, seed: int, rtol: float 
         param_names=np.array(PARAM_NAMES),
         profile_params=np.stack(profile_params_list),
     )
+    print(f"  Dataset saved to {out} ({len(valid)}/{n_samples} samples).")
 
 
 def main() -> None:
@@ -131,8 +136,9 @@ def main() -> None:
     parser.add_argument("--nz", type=int, default=64, help="Number of Z grid points per case.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for parameter sampling.")
     parser.add_argument("--rtol", type=float, default=1e-5, help="GS solver Picard convergence tolerance.")
+    parser.add_argument("--n-jobs", type=int, default=-1, help="Number of parallel workers (-1 = all cores).")
     args = parser.parse_args()
-    generate(args.out, args.n_samples, args.nr, args.nz, args.seed, args.rtol)
+    generate(args.out, args.n_samples, args.nr, args.nz, args.seed, args.rtol, args.n_jobs)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from tqdm import trange
 
 from .data import GSDataset, split_indices
 from .losses import (
+    axis_constraint_loss,
     boundary_band_loss,
     gs_residual_loss,
     ip_constraint_loss,
@@ -45,6 +46,9 @@ def run_epoch(
     ip_weight: float = 0.0,
     betap_weight: float = 0.0,
     clip_grad: float = 0.0,
+    axis_weight: float = 0.0,
+    amp: bool = False,
+    accum_steps: int = 1,
 ) -> dict[str, float]:
     """Run one train or validation epoch and return average losses for each component."""
     train = opt is not None
@@ -53,10 +57,18 @@ def run_epoch(
     total_bc = 0.0
     total_pde = 0.0
     total_ip = 0.0
+    total_axis = 0.0
     n_samples = 0
 
+    scaler = torch.amp.GradScaler(device.type, enabled=(train and amp))
+    ctx = torch.amp.autocast(device.type, enabled=amp)
+
+    # Gradient accumulation state
+    if train:
+        opt.zero_grad()
+
     with torch.set_grad_enabled(train):
-        for x, y, mask, sdf, params, meta_list in loader:
+        for step, (x, y, mask, sdf, params, meta_list) in enumerate(loader):
             x = x.to(device)
             y = y.to(device)
             mask = mask.to(device)
@@ -66,62 +78,78 @@ def run_epoch(
             meta = _stack_metadata(meta_list)
             meta = {k: v.to(device) for k, v in meta.items()}
 
-            # Predict normalized flux over the whole rectangular grid.
-            pred = model(x)
+            with ctx:
+                # Predict normalized flux over the whole rectangular grid.
+                pred = model(x)
 
-            # ---- 监督损失 ----
-            loss_data = masked_mse(pred, y, mask)
+                # ---- 监督损失 ----
+                loss_data = masked_mse(pred, y, mask)
 
-            # ---- 边界条件 ----
-            loss_bc = bc_weight * boundary_band_loss(pred, sdf)
+                # ---- 边界条件 ----
+                loss_bc = bc_weight * boundary_band_loss(pred, sdf)
 
-            # ---- PDE 残差 (真实 GS 方程) ----
-            loss_pde = torch.tensor(0.0, device=device)
-            if pde_weight > 0:
-                loss_pde = pde_weight * gs_residual_loss(
-                    pred,
-                    R=meta["R"],
-                    Z=meta["Z"],
-                    mask=mask,
-                    L=meta["profile_params"][:, 0],
-                    Beta0=meta["profile_params"][:, 1],
-                    R0=meta["R0"],
-                    alpha_m=meta["alpha_m"],
-                    alpha_n=meta["alpha_n"],
-                    psi_axis=meta["psi_axis"],
-                    psi_lcfs=meta["psi_lcfs"],
-                )
+                # ---- PDE 残差 (真实 GS 方程) ----
+                loss_pde = torch.tensor(0.0, device=device)
+                if pde_weight > 0:
+                    loss_pde = pde_weight * gs_residual_loss(
+                        pred,
+                        R=meta["R"],
+                        Z=meta["Z"],
+                        mask=mask,
+                        L=meta["profile_params"][:, 0],
+                        Beta0=meta["profile_params"][:, 1],
+                        R0=meta["R0"],
+                        alpha_m=meta["alpha_m"],
+                        alpha_n=meta["alpha_n"],
+                        psi_axis=meta["psi_axis"],
+                        psi_lcfs=meta["psi_lcfs"],
+                    )
 
-            # ---- Ip 积分约束 (可选) ----
-            loss_ip = torch.tensor(0.0, device=device)
-            if ip_weight > 0:
-                loss_ip = ip_weight * ip_constraint_loss(
-                    pred,
-                    R=meta["R"],
-                    Z=meta["Z"],
-                    mask=mask,
-                    L=meta["profile_params"][:, 0],
-                    Beta0=meta["profile_params"][:, 1],
-                    R0=meta["R0"],
-                    alpha_m=meta["alpha_m"],
-                    alpha_n=meta["alpha_n"],
-                    Ip_target=params[:, 4].to(device),
-                )
+                # ---- Ip 积分约束 (可选) ----
+                loss_ip = torch.tensor(0.0, device=device)
+                if ip_weight > 0:
+                    loss_ip = ip_weight * ip_constraint_loss(
+                        pred,
+                        R=meta["R"],
+                        Z=meta["Z"],
+                        mask=mask,
+                        L=meta["profile_params"][:, 0],
+                        Beta0=meta["profile_params"][:, 1],
+                        R0=meta["R0"],
+                        alpha_m=meta["alpha_m"],
+                        alpha_n=meta["alpha_n"],
+                        Ip_target=params[:, 4].to(device),
+                    )
 
-            loss = loss_data + loss_bc + loss_pde + loss_ip
+                # ---- 磁轴约束 (psi_bar(R_axis, Z_axis) = 1) ----
+                loss_axis = torch.tensor(0.0, device=device)
+                if axis_weight > 0:
+                    loss_axis = axis_weight * axis_constraint_loss(
+                        pred, R=meta["R"], Z=meta["Z"],
+                        R_axis=meta["R_axis"], Z_axis=meta["Z_axis"],
+                    )
+
+                loss = loss_data + loss_bc + loss_pde + loss_ip + loss_axis
 
             if train:
-                opt.zero_grad()
-                loss.backward()
-                if clip_grad > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-                opt.step()
+                # 梯度累积：除 accum_steps 使有效 batch 大小 = batch_size × accum_steps
+                (loss / accum_steps).backward()
+
+                # 每 accum_steps 步更新一次参数
+                if (step + 1) % accum_steps == 0:
+                    if clip_grad > 0:
+                        scaler.unscale_(opt)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+                    scaler.step(opt)
+                    scaler.update()
+                    opt.zero_grad()
 
             batch_size = x.shape[0]
             total_data += float(loss_data.detach()) * batch_size
             total_bc += float(loss_bc.detach()) * batch_size
             total_pde += float(loss_pde.detach()) * batch_size
             total_ip += float(loss_ip.detach()) * batch_size
+            total_axis += float(loss_axis.detach()) * batch_size
             n_samples += batch_size
 
     return {
@@ -129,7 +157,8 @@ def run_epoch(
         "bc": total_bc / n_samples,
         "pde": total_pde / n_samples,
         "ip": total_ip / n_samples,
-        "total": (total_data + total_bc + total_pde + total_ip) / n_samples,
+        "axis": total_axis / n_samples,
+        "total": (total_data + total_bc + total_pde + total_ip + total_axis) / n_samples,
     }
 
 
@@ -148,7 +177,10 @@ def main() -> None:
     parser.add_argument("--pde-weight", type=float, default=0.01, help="Weight for GS PDE residual loss.")
     parser.add_argument("--bc-weight", type=float, default=0.05, help="Weight for LCFS boundary-band loss.")
     parser.add_argument("--ip-weight", type=float, default=0.0, help="Weight for Ip integral constraint (optional).")
+    parser.add_argument("--axis-weight", type=float, default=0.01, help="Weight for magnetic axis constraint.")
     parser.add_argument("--clip-grad", type=float, default=1.0, help="Gradient clipping max norm (0 = disable).")
+    parser.add_argument("--accum-steps", type=int, default=2, help="Gradient accumulation steps (effective batch = batch_size × accum_steps).")
+    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=False, help="Enable mixed precision training (requires power-of-2 grid sizes).")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for split/model initialization.")
     args = parser.parse_args()
 
@@ -164,7 +196,8 @@ def main() -> None:
     print(f"  Dataset: {n_samples} samples")
     print(f"  Train: {len(train_idx)}, Val: {len(val_idx)}, Test: {len(test_idx)}")
     print(f"  Model: width={args.width}, modes={args.modes1}/{args.modes2}, layers={args.layers}")
-    print(f"  Loss weights: data=1.0, bc={args.bc_weight}, pde={args.pde_weight}, ip={args.ip_weight}")
+    print(f"  Loss weights: data=1.0, bc={args.bc_weight}, pde={args.pde_weight}, ip={args.ip_weight}, axis={args.axis_weight}")
+    print(f"  Mixed precision: {args.amp}")
     print(f"{'='*60}\n")
 
     train_ds = GSDataset(args.data, train_idx)
@@ -195,6 +228,7 @@ def main() -> None:
 
     print(f"  Optimizer: AdamW, lr={args.lr}, weight_decay=1e-6")
     print(f"  Scheduler: CosineAnnealingLR, T_max={args.epochs}")
+    print(f"  Gradient accumulation: {args.accum_steps} steps (effective batch = {args.batch_size * args.accum_steps})")
     if args.clip_grad > 0:
         print(f"  Gradient clipping: max_norm={args.clip_grad}")
     print()
@@ -203,8 +237,8 @@ def main() -> None:
     history: list[dict] = []
     pbar = trange(args.epochs, desc="Training")
     for epoch in pbar:
-        train_losses = run_epoch(model, train_loader, opt, device, args.pde_weight, args.bc_weight, args.ip_weight, clip_grad=args.clip_grad)
-        val_losses = run_epoch(model, val_loader, None, device, args.pde_weight, args.bc_weight, args.ip_weight) if len(val_ds) else train_losses
+        train_losses = run_epoch(model, train_loader, opt, device, args.pde_weight, args.bc_weight, args.ip_weight, clip_grad=args.clip_grad, axis_weight=args.axis_weight, amp=args.amp, accum_steps=args.accum_steps)
+        val_losses = run_epoch(model, val_loader, None, device, args.pde_weight, args.bc_weight, args.ip_weight, axis_weight=args.axis_weight) if len(val_ds) else train_losses
 
         current_lr = scheduler.get_last_lr()[0]
         scheduler.step()
@@ -217,11 +251,13 @@ def main() -> None:
             "train_bc": train_losses["bc"],
             "train_pde": train_losses["pde"],
             "train_ip": train_losses["ip"],
+            "train_axis": train_losses["axis"],
             "train_total": train_losses["total"],
             "val_data": val_losses["data"],
             "val_bc": val_losses["bc"],
             "val_pde": val_losses["pde"],
             "val_ip": val_losses["ip"],
+            "val_axis": val_losses["axis"],
             "val_total": val_losses["total"],
         })
 
