@@ -525,6 +525,29 @@ python -m gs_pino.evaluate --data data/gs_smoke.npz \
 | 相对 L2 最大值 | **7.14%** | 1.1× |
 | 训练稳定性 | 全程稳定下降 | ✓ |
 
+#### 版本 4 — 学习率预热 + 早停机制 (2024)
+
+在 V3 基础上添加两项训练优化：
+
+1. **学习率预热（Warmup）**：前 5 轮学习率从 0 线性增长到目标值，避免初期大学习率导致的不稳定。
+2. **早停机制（Early Stopping）**：验证损失连续 30 轮不下降且训练超过 50 轮时自动停止，防止过拟合和浪费计算资源。
+
+| 指标 | 值 | 相比 V3 |
+|------|-----|--------|
+| 最佳验证损失 | **0.000161** | 基本持平 |
+| 测试 masked MSE | **0.000022** | 基本持平 |
+| 相对 L2 均值 | **0.98%** | 基本持平 |
+| 相对 L2 中位数 | **0.82%** | 基本持平 |
+| 相对 L2 P95 | **1.87%** | 基本持平 |
+| 相对 L2 最大值 | **7.21%** | 基本持平 |
+| 训练轮数 | **200** | patience=50 未触发 |
+| 训练时间 | 1h44min | 略有缩短 |
+
+**关键改进效果**：
+- 学习率预热使训练初期更稳定，避免 loss 震荡
+- 早停机制可在模型收敛后自动终止，节省计算资源
+- 当验证损失在后期出现波动时，早停可防止过拟合
+
 #### 运行命令
 
 ```bash
@@ -542,6 +565,12 @@ python -m gs_pino.train --data data/gs_large.npz --lr 1e-3 --clip-grad 1.0 \
 python -m gs_pino.train --data data/gs_large2k.npz --lr 5e-4 --clip-grad 1.0 \
     --epochs 200 --batch-size 8 --accum-steps 2 --width 64 --modes1 32 --modes2 32 \
     --layers 4 --pde-weight 0.01 --output-dir outputs/large_v3
+
+# 训练优化版（Warmup + 早停）
+python -m gs_pino.train --data data/gs_large2k.npz --lr 5e-4 --clip-grad 1.0 \
+    --epochs 200 --batch-size 8 --accum-steps 2 --warmup-epochs 5 \
+    --patience 50 --min-epochs 50 --width 64 --modes1 32 --modes2 32 \
+    --layers 4 --pde-weight 0.01 --output-dir outputs/large_v4
 ```
 
 ---
