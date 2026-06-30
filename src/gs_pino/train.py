@@ -181,6 +181,9 @@ def main() -> None:
     parser.add_argument("--clip-grad", type=float, default=1.0, help="Gradient clipping max norm (0 = disable).")
     parser.add_argument("--accum-steps", type=int, default=2, help="Gradient accumulation steps (effective batch = batch_size × accum_steps).")
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=False, help="Enable mixed precision training (requires power-of-2 grid sizes).")
+    parser.add_argument("--warmup-epochs", type=int, default=5, help="Number of warmup epochs with linearly increasing LR.")
+    parser.add_argument("--patience", type=int, default=30, help="Early stopping patience (0 = disable).")
+    parser.add_argument("--min-epochs", type=int, default=50, help="Minimum training epochs before early stopping takes effect.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for split/model initialization.")
     args = parser.parse_args()
 
@@ -224,24 +227,38 @@ def main() -> None:
     in_channels = train_ds[0][0].shape[0]
     model = UFNO2d(in_channels, args.modes1, args.modes2, args.width, args.layers).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-6)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs - args.warmup_epochs)
 
     print(f"  Optimizer: AdamW, lr={args.lr}, weight_decay=1e-6")
-    print(f"  Scheduler: CosineAnnealingLR, T_max={args.epochs}")
+    print(f"  Scheduler: CosineAnnealingLR (after {args.warmup_epochs} epochs warmup)")
     print(f"  Gradient accumulation: {args.accum_steps} steps (effective batch = {args.batch_size * args.accum_steps})")
     if args.clip_grad > 0:
         print(f"  Gradient clipping: max_norm={args.clip_grad}")
+    if args.patience > 0:
+        print(f"  Early stopping: patience={args.patience}, min_epochs={args.min_epochs}")
     print()
 
     best = float("inf")
     history: list[dict] = []
     pbar = trange(args.epochs, desc="Training")
+    patience_counter = 0
+
     for epoch in pbar:
+        # 学习率预热：前 warmup_epochs 轮线性增长
+        if epoch < args.warmup_epochs:
+            warmup_factor = (epoch + 1) / args.warmup_epochs
+            for param_group in opt.param_groups:
+                param_group["lr"] = args.lr * warmup_factor
+            current_lr = args.lr * warmup_factor
+        else:
+            current_lr = scheduler.get_last_lr()[0]
+
         train_losses = run_epoch(model, train_loader, opt, device, args.pde_weight, args.bc_weight, args.ip_weight, clip_grad=args.clip_grad, axis_weight=args.axis_weight, amp=args.amp, accum_steps=args.accum_steps)
         val_losses = run_epoch(model, val_loader, None, device, args.pde_weight, args.bc_weight, args.ip_weight, axis_weight=args.axis_weight) if len(val_ds) else train_losses
 
-        current_lr = scheduler.get_last_lr()[0]
-        scheduler.step()
+        # 预热结束后使用余弦退火
+        if epoch >= args.warmup_epochs:
+            scheduler.step()
 
         # 记录历史
         history.append({
@@ -269,8 +286,10 @@ def main() -> None:
             val=f"{val_losses['total']:.4f}",
         )
 
+        # 早停检查
         if val_losses["total"] < best:
             best = val_losses["total"]
+            patience_counter = 0
             torch.save(
                 {
                     "model": model.state_dict(),
@@ -281,6 +300,11 @@ def main() -> None:
                 },
                 output_dir / "best.pt",
             )
+        else:
+            patience_counter += 1
+            if args.patience > 0 and epoch >= args.min_epochs and patience_counter >= args.patience:
+                print(f"\n  Early stopping triggered after {patience_counter} epochs without improvement.")
+                break
 
     # 保存历史
     (output_dir / "history.json").write_text(json.dumps(history, indent=2))
@@ -288,6 +312,7 @@ def main() -> None:
     # 生成训练曲线图
     plot_training_history(history, output_dir)
     print(f"\n  Training complete. Best val loss: {best:.6f}")
+    print(f"  Final epoch: {len(history)}")
     print(f"  Saved to: {output_dir}")
 
 
