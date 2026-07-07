@@ -1,4 +1,9 @@
-"""Neural-operator model definitions used by the GS_PINO workflow."""
+"""Neural-operator model definitions used by the GS_PINO workflow.
+
+Contains:
+1. PlaNetCore: Trunk-Branch-Decoder architecture following PlaNet-equil
+2. UFNO2d: Original U-FNO architecture (kept for reference)
+"""
 
 from __future__ import annotations
 
@@ -7,59 +12,181 @@ from torch import nn
 import torch.nn.functional as F
 
 
-class SpectralConv2d(nn.Module):
-    """2-D Fourier convolution that keeps only a fixed number of low modes."""
+class TrainableSwish(nn.Module):
+    def __init__(self, beta: float = 1.0):
+        super().__init__()
+        self.beta = nn.Parameter(torch.tensor(beta))
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * F.sigmoid(self.beta * x)
+
+
+class Conv2dNornAct(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: tuple = (3, 3), padding: str = "same"):
+        super().__init__()
+        self.conv2d = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding)
+        self.norm = nn.BatchNorm2d(num_features=out_channels)
+        self.act = TrainableSwish()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(self.norm(self.conv2d(x)))
+
+
+class TrunkNet(nn.Module):
+    def __init__(self, hidden_dim: int = 128, nr: int = 64, nz: int = 64):
+        super().__init__()
+        assert nr % 2 == 0, f"nr must be a power of 2, got {nr}"
+        assert nz % 2 == 0, f"nz must be a power of 2, got {nz}"
+        self.norm_r = nn.BatchNorm2d(num_features=1)
+        self.norm_z = nn.BatchNorm2d(num_features=1)
+        self.trunk_r = nn.ModuleList()
+        self.trunk_z = nn.ModuleList()
+        channels = [1, 8, 16, 32]
+        for i in range(3):
+            in_channels, out_channels = channels[i], channels[i + 1]
+            self.trunk_r.append(
+                nn.Sequential(
+                    Conv2dNornAct(in_channels=in_channels, out_channels=out_channels),
+                    nn.MaxPool2d(kernel_size=2),
+                )
+            )
+            self.trunk_z.append(
+                nn.Sequential(
+                    Conv2dNornAct(in_channels=in_channels, out_channels=out_channels),
+                    nn.MaxPool2d(kernel_size=2),
+                )
+            )
+        self.flatten = nn.Flatten()
+        self.linear_1 = nn.Linear(
+            in_features=int(2 * channels[-1] * nr / 2**3 * nz / 2**3), out_features=128
+        )
+        self.act = TrainableSwish()
+        self.linear_2 = nn.Linear(in_features=128, out_features=hidden_dim)
+
+    def forward(self, x_r: torch.Tensor, x_z: torch.Tensor) -> torch.Tensor:
+        x_r = self.norm_r(x_r.unsqueeze(1))
+        for layer in self.trunk_r:
+            x_r = layer(x_r)
+
+        x_z = self.norm_z(x_z.unsqueeze(1))
+        for layer in self.trunk_z:
+            x_z = layer(x_z)
+
+        x = torch.cat((x_r, x_z), dim=1)
+        x = self.flatten(x)
+        x = self.act(self.linear_1(x))
+        x = self.linear_2(x)
+        return x
+
+
+class BranchNet(nn.Module):
+    def __init__(self, in_dim: int = 9, hidden_dim: int = 128):
+        super().__init__()
+        self.linear_1 = nn.Linear(in_features=in_dim, out_features=256)
+        self.norm_1 = nn.BatchNorm1d(num_features=256)
+        self.act_1 = TrainableSwish(beta=1.0)
+        self.linear_2 = nn.Linear(in_features=256, out_features=128)
+        self.norm_2 = nn.BatchNorm1d(num_features=128)
+        self.act_2 = TrainableSwish(beta=1.0)
+        self.linear_3 = nn.Linear(in_features=128, out_features=hidden_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.act_1(self.norm_1(self.linear_1(x)))
+        x = self.act_2(self.norm_2(self.linear_2(x)))
+        x = self.linear_3(x)
+        return x
+
+
+class DecoderConv(nn.Module):
+    def __init__(self, hidden_dim: int = 128, nr: int = 64, nz: int = 64):
+        super().__init__()
+        assert nr % 2 == 0, f"nr must be a power of 2, got {nr}"
+        assert nz % 2 == 0, f"nz must be a power of 2, got {nz}"
+        self.nr = nr
+        self.nz = nz
+        self.linear = nn.Linear(
+            in_features=hidden_dim,
+            out_features=128 * int(self.nr / 2**3) * int(self.nz / 2**3),
+        )
+        self.act = TrainableSwish()
+        self.decoder = nn.ModuleList()
+        channels = [128, 32, 16, 8]
+        for i in range(len(channels) - 1):
+            in_channels, out_channels = channels[i], channels[i + 1]
+            self.decoder.append(
+                nn.Sequential(
+                    nn.UpsamplingBilinear2d(scale_factor=2),
+                    Conv2dNornAct(in_channels=in_channels, out_channels=out_channels),
+                )
+            )
+        self.conv = nn.Conv2d(in_channels=channels[-1], out_channels=1, kernel_size=(1, 1), padding="same")
+
+    def forward(self, x_trunk: torch.Tensor, x_branch: torch.Tensor) -> torch.Tensor:
+        batch = x_branch.shape[0]
+        x = x_branch * x_trunk
+        x = self.act(self.linear(x))
+        x = x.reshape((batch, 128, int(self.nr / 2**3), int(self.nz / 2**3)))
+
+        for layer in self.decoder:
+            x = layer(x)
+
+        x = self.conv(x).squeeze(1)
+        return x
+
+
+class PlaNetCore(nn.Module):
+    def __init__(self, n_measures: int = 9, hidden_dim: int = 128, nr: int = 64, nz: int = 64):
+        super().__init__()
+        self.trunk = TrunkNet(hidden_dim=hidden_dim, nr=nr, nz=nz)
+        self.branch = BranchNet(in_dim=n_measures, hidden_dim=hidden_dim)
+        self.decoder = DecoderConv(hidden_dim=hidden_dim, nr=nr, nz=nz)
+
+    def forward(self, x: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        x_meas, x_r, x_z = x
+        out_branch = self.branch(x_meas)
+        out_trunk = self.trunk(x_r, x_z)
+        return self.decoder(out_branch, out_trunk)
+
+
+class SpectralConv2d(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, modes1: int, modes2: int):
         super().__init__()
-        # Store dimensions and mode counts for use in the forward FFT path.
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.modes1 = modes1
         self.modes2 = modes2
 
-        # Complex-valued weights for positive and negative frequency blocks.
         scale = 1 / (in_channels * out_channels)
         self.weights1 = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2, dtype=torch.cfloat))
         self.weights2 = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2, dtype=torch.cfloat))
 
     def compl_mul2d(self, x: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-        """Multiply Fourier coefficients by learned complex weights."""
         return torch.einsum("bixy,ioxy->boxy", x, weights)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply FFT, learned low-mode multiplication, and inverse FFT."""
         batch, _, height, width = x.shape
 
-        # Real FFT stores only non-negative frequencies in the last dimension.
         x_ft = torch.fft.rfft2(x)
         out_ft = torch.zeros(batch, self.out_channels, height, width // 2 + 1, dtype=torch.cfloat, device=x.device)
 
-        # Clamp mode counts so the same model can run on smaller smoke-test grids.
         m1 = min(self.modes1, height)
         m2 = min(self.modes2, width // 2 + 1)
 
-        # Fill low positive and negative vertical-frequency modes.
         out_ft[:, :, :m1, :m2] = self.compl_mul2d(x_ft[:, :, :m1, :m2], self.weights1[:, :, :m1, :m2])
         out_ft[:, :, -m1:, :m2] = self.compl_mul2d(x_ft[:, :, -m1:, :m2], self.weights2[:, :, :m1, :m2])
 
-        # Transform back to the physical grid.
         return torch.fft.irfft2(out_ft, s=(height, width))
 
 
 class UNetBranch(nn.Module):
-    """Small local branch that complements global spectral mixing."""
-
     def __init__(self, width: int):
         super().__init__()
-        # Downsampled convolutions increase local receptive field cheaply.
         self.down = nn.Sequential(
             nn.Conv2d(width, width, 3, padding=1),
             nn.GELU(),
             nn.Conv2d(width, width, 3, padding=1),
             nn.GELU(),
         )
-        # Merge the original feature map and upsampled local features.
         self.up = nn.Sequential(
             nn.Conv2d(width * 2, width, 3, padding=1),
             nn.GELU(),
@@ -67,7 +194,6 @@ class UNetBranch(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run a one-level U-Net correction branch."""
         y = F.avg_pool2d(x, 2, ceil_mode=True)
         y = self.down(y)
         y = F.interpolate(y, size=x.shape[-2:], mode="bilinear", align_corners=False)
@@ -75,8 +201,6 @@ class UNetBranch(nn.Module):
 
 
 class UFNOBlock(nn.Module):
-    """One U-FNO block: spectral path + pointwise path + U-Net path."""
-
     def __init__(self, width: int, modes1: int, modes2: int):
         super().__init__()
         self.spectral = SpectralConv2d(width, width, modes1, modes2)
@@ -84,26 +208,17 @@ class UFNOBlock(nn.Module):
         self.unet = UNetBranch(width)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Combine global, local, and channel-wise updates."""
         return F.gelu(self.spectral(x) + self.pointwise(x) + self.unet(x))
 
 
 class UFNO2d(nn.Module):
-    """Masked-grid U-FNO for predicting normalized flux on a rectangular grid."""
-
     def __init__(self, in_channels: int, modes1: int = 16, modes2: int = 16, width: int = 32, layers: int = 4):
         super().__init__()
-        # Lift raw coordinate/geometry/parameter channels into latent width.
         self.lift = nn.Conv2d(in_channels, width, 1)
-
-        # Stack repeated U-FNO blocks to approximate the solution operator.
         self.blocks = nn.ModuleList([UFNOBlock(width, modes1, modes2) for _ in range(layers)])
-
-        # Project the latent field back to one channel: normalized psi_bar.
         self.proj = nn.Sequential(nn.Conv2d(width, 128, 1), nn.GELU(), nn.Conv2d(128, 1, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Return `psi_bar` with shape `[batch, 1, nr, nz]`."""
         x = self.lift(x)
         for block in self.blocks:
             x = block(x)

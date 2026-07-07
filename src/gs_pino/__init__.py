@@ -1,4 +1,4 @@
-"""Masked U-FNO/PINO tools for fixed-boundary Grad-Shafranov surrogates."""
+"""GS_PINO: Neural operator solver for fixed and free-boundary Grad-Shafranov equations."""
 
 __all__ = ["__version__"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

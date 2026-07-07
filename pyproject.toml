@@ -1,7 +1,7 @@
 [project]
 name = "gs-pino"
-version = "0.1.0"
-description = "Masked U-FNO/PINO surrogate for fixed-boundary Grad-Shafranov equilibria"
+version = "0.2.0"
+description = "U-FNO/PINO surrogate for fixed and free-boundary Grad-Shafranov equilibria"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.23",
@@ -17,3 +17,5 @@ where = ["src"]
 gs-pino-generate = "gs_pino.generate_dataset:main"
 gs-pino-train = "gs_pino.train:main"
 gs-pino-evaluate = "gs_pino.evaluate:main"
+gs-pino-generate-freegs = "gs_pino.generate_freegs_dataset:main"
+gs-pino-train-freegs = "gs_pino.train_freegs:main"
