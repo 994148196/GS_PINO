@@ -72,6 +72,49 @@ class FreeBndDataset(Dataset):
 
         self.n_measures = all_params.shape[1]
 
+        self._preload_data()
+
+    def _preload_data(self):
+        n = len(self.indices)
+        self.R_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
+        self.Z_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
+        self.psi_total_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
+        self.psi_plasma_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
+        self.psi_coils_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
+        self.mask_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
+        self.rhs_data = np.zeros((n, self.nr - 2, self.nz - 2), dtype=np.float32)
+
+        for idx in range(n):
+            i = int(self.indices[idx])
+            base_R = self.base_R[i]
+            base_Z = self.base_Z[i]
+
+            if base_R.shape[0] != self.nr or base_R.shape[1] != self.nz:
+                rr = np.linspace(base_R[:, 0].min(), base_R[:, 0].max(), self.nr)
+                zz = np.linspace(base_Z[0, :].min(), base_Z[0, :].max(), self.nz)
+                R, Z = np.meshgrid(rr, zz, indexing='ij')
+
+                self.psi_total_data[idx] = interp_fun(f=self.base_psi_total[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
+                self.psi_plasma_data[idx] = interp_fun(f=self.base_psi_plasma[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
+                self.psi_coils_data[idx] = interp_fun(f=self.base_psi_coils[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
+                self.mask_data[idx] = interp_fun(f=self.base_mask[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
+                
+                if self.base_rhs is not None:
+                    self.rhs_data[idx] = interp_fun(f=self.base_rhs[i], RR=base_R[1:-1, 1:-1], ZZ=base_Z[1:-1, 1:-1], rr=R[1:-1, 1:-1], zz=Z[1:-1, 1:-1])
+                else:
+                    self.rhs_data[idx] = np.zeros((self.nr - 2, self.nz - 2), dtype=np.float32)
+            else:
+                R = base_R
+                Z = base_Z
+                self.psi_total_data[idx] = self.base_psi_total[i]
+                self.psi_plasma_data[idx] = self.base_psi_plasma[i]
+                self.psi_coils_data[idx] = self.base_psi_coils[i]
+                self.mask_data[idx] = self.base_mask[i]
+                self.rhs_data[idx] = self.base_rhs[i] if self.base_rhs is not None else np.zeros((self.nr - 2, self.nz - 2), dtype=np.float32)
+
+            self.R_data[idx] = R.astype(np.float32)
+            self.Z_data[idx] = Z.astype(np.float32)
+
     def __len__(self) -> int:
         return len(self.indices)
 
@@ -84,39 +127,13 @@ class FreeBndDataset(Dataset):
         measures = np.concatenate([coil_currents, params], axis=0)
         measures = self.param_norm.apply(measures).astype(np.float32)
 
-        base_R = self.base_R[i]
-        base_Z = self.base_Z[i]
-
-        if base_R.shape[0] != self.nr or base_R.shape[1] != self.nz:
-            rr = np.linspace(base_R[:, 0].min(), base_R[:, 0].max(), self.nr)
-            zz = np.linspace(base_Z[0, :].min(), base_Z[0, :].max(), self.nz)
-            R, Z = np.meshgrid(rr, zz, indexing='ij')
-
-            psi_total = interp_fun(f=self.base_psi_total[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
-            psi_plasma = interp_fun(f=self.base_psi_plasma[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
-            psi_coils = interp_fun(f=self.base_psi_coils[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
-            mask = interp_fun(f=self.base_mask[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
-            
-            if self.base_rhs is not None:
-                rhs = interp_fun(f=self.base_rhs[i], RR=base_R[1:-1, 1:-1], ZZ=base_Z[1:-1, 1:-1], rr=R[1:-1, 1:-1], zz=Z[1:-1, 1:-1])
-            else:
-                rhs = np.zeros((self.nr - 2, self.nz - 2), dtype=np.float32)
-        else:
-            R = base_R
-            Z = base_Z
-            psi_total = self.base_psi_total[i]
-            psi_plasma = self.base_psi_plasma[i]
-            psi_coils = self.base_psi_coils[i]
-            mask = self.base_mask[i]
-            rhs = self.base_rhs[i] if self.base_rhs is not None else np.zeros((self.nr - 2, self.nz - 2), dtype=np.float32)
-
-        R = R.astype(np.float32)
-        Z = Z.astype(np.float32)
-        psi_total = psi_total.astype(np.float32)
-        psi_plasma = psi_plasma.astype(np.float32)
-        psi_coils = psi_coils.astype(np.float32)
-        mask = mask.astype(np.float32)
-        rhs = rhs.astype(np.float32)
+        R = self.R_data[item]
+        Z = self.Z_data[item]
+        psi_total = self.psi_total_data[item]
+        psi_plasma = self.psi_plasma_data[item]
+        psi_coils = self.psi_coils_data[item]
+        mask = self.mask_data[item]
+        rhs = self.rhs_data[item]
 
         metadata = {
             "R": torch.from_numpy(R),

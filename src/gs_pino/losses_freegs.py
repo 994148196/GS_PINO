@@ -124,13 +124,16 @@ class GSOperatorLoss(nn.Module):
 
 
 class PlaNetLoss(nn.Module):
-    def __init__(self, is_physics_informed: bool = True, scale_mse: float = 1.0, scale_pde: float = 0.1):
+    def __init__(self, is_physics_informed: bool = True, scale_mse: float = 1.0, scale_pde: float = 0.1, 
+                 scale_axis: float = 0.1, scale_ip: float = 0.01):
         super().__init__()
         self.is_physics_informed = is_physics_informed
         self.loss_mse = nn.MSELoss()
         self.loss_pde = GSOperatorLoss()
         self.scale_mse = scale_mse
         self.scale_pde = scale_pde
+        self.scale_axis = scale_axis
+        self.scale_ip = scale_ip
         self.log_dict = {}
 
     def forward(
@@ -143,27 +146,67 @@ class PlaNetLoss(nn.Module):
         RR: torch.Tensor,
         ZZ: torch.Tensor,
         psi_coils: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+        meta: dict | None = None,
     ) -> torch.Tensor:
         mse_loss = self.scale_mse * self.loss_mse(input=pred, target=target)
         self.log_dict["mse_loss"] = mse_loss.item()
+        
         if not self.is_physics_informed:
             return mse_loss
+        
+        total_loss = mse_loss
+        
+        if psi_coils is not None:
+            pred_plasma = pred - psi_coils
         else:
-            if psi_coils is not None:
-                pred_plasma = pred - psi_coils
-            else:
-                pred_plasma = pred
-            
-            pde_loss = self.scale_pde * self.loss_pde(
-                pred=pred_plasma,
-                rhs=rhs,
-                Laplace_kernel=Laplace_kernel,
-                Df_dr_kernel=Df_dr_kernel,
-                RR=RR,
-                ZZ=ZZ,
+            pred_plasma = pred
+        
+        pde_loss = self.scale_pde * self.loss_pde(
+            pred=pred_plasma,
+            rhs=rhs,
+            Laplace_kernel=Laplace_kernel,
+            Df_dr_kernel=Df_dr_kernel,
+            RR=RR,
+            ZZ=ZZ,
+        )
+        self.log_dict["pde_loss"] = pde_loss.item()
+        total_loss += pde_loss
+        
+        if meta is not None and self.scale_axis > 0:
+            axis_loss = self.scale_axis * axis_constraint_loss(
+                pred.unsqueeze(1),
+                R=RR,
+                Z=ZZ,
+                psi_coils=psi_coils.unsqueeze(1),
+                psi_axis=meta["psi_axis"],
+                psi_bndry=meta["psi_bndry"],
+                R_axis=meta["R_axis"],
+                Z_axis=meta["Z_axis"],
             )
-            self.log_dict["pde_loss"] = pde_loss.item()
-            return mse_loss + pde_loss
+            self.log_dict["axis_loss"] = axis_loss.item()
+            total_loss += axis_loss
+        
+        if meta is not None and self.scale_ip > 0 and mask is not None:
+            ip_loss = self.scale_ip * ip_constraint_loss_freebnd(
+                pred.unsqueeze(1),
+                R=RR,
+                Z=ZZ,
+                mask=mask.unsqueeze(1),
+                psi_coils=psi_coils.unsqueeze(1),
+                L=meta["L"],
+                Beta0=meta["Beta0"],
+                R0=meta["R_axis"],
+                alpha_m=meta["alpha_m"],
+                alpha_n=meta["alpha_n"],
+                psi_axis=meta["psi_axis"],
+                psi_bndry=meta["psi_bndry"],
+                Ip_target=meta["Ip"],
+            )
+            self.log_dict["ip_loss"] = ip_loss.item()
+            total_loss += ip_loss
+        
+        return total_loss
 
 
 def gs_residual_loss_freebnd(

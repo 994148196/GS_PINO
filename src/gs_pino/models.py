@@ -25,11 +25,14 @@ class Conv2dNornAct(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: tuple = (3, 3), padding: str = "same"):
         super().__init__()
         self.conv2d = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding)
-        self.norm = nn.BatchNorm2d(num_features=out_channels)
+        self.norm = nn.LayerNorm(out_channels)
         self.act = TrainableSwish()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.act(self.norm(self.conv2d(x)))
+        x = self.conv2d(x)
+        x = x.permute(0, 2, 3, 1)
+        x = self.act(self.norm(x))
+        return x.permute(0, 3, 1, 2)
 
 
 class TrunkNet(nn.Module):
@@ -37,44 +40,32 @@ class TrunkNet(nn.Module):
         super().__init__()
         assert nr % 2 == 0, f"nr must be a power of 2, got {nr}"
         assert nz % 2 == 0, f"nz must be a power of 2, got {nz}"
-        self.norm_r = nn.BatchNorm2d(num_features=1)
-        self.norm_z = nn.BatchNorm2d(num_features=1)
-        self.trunk_r = nn.ModuleList()
-        self.trunk_z = nn.ModuleList()
-        channels = [1, 8, 16, 32]
-        for i in range(3):
+        
+        self.conv_layers = nn.ModuleList()
+        channels = [2, 16, 32, 64, 128]
+        for i in range(len(channels) - 1):
             in_channels, out_channels = channels[i], channels[i + 1]
-            self.trunk_r.append(
+            self.conv_layers.append(
                 nn.Sequential(
-                    Conv2dNornAct(in_channels=in_channels, out_channels=out_channels),
+                    Conv2dNornAct(in_channels=in_channels, out_channels=out_channels, kernel_size=(3, 3)),
                     nn.MaxPool2d(kernel_size=2),
                 )
             )
-            self.trunk_z.append(
-                nn.Sequential(
-                    Conv2dNornAct(in_channels=in_channels, out_channels=out_channels),
-                    nn.MaxPool2d(kernel_size=2),
-                )
-            )
+        
         self.flatten = nn.Flatten()
         self.linear_1 = nn.Linear(
-            in_features=int(2 * channels[-1] * nr / 2**3 * nz / 2**3), out_features=128
+            in_features=int(channels[-1] * nr / 2**4 * nz / 2**4), out_features=256
         )
-        self.act = TrainableSwish()
-        self.linear_2 = nn.Linear(in_features=128, out_features=hidden_dim)
+        self.norm_1 = nn.LayerNorm(256)
+        self.act_1 = TrainableSwish()
+        self.linear_2 = nn.Linear(in_features=256, out_features=hidden_dim)
 
     def forward(self, x_r: torch.Tensor, x_z: torch.Tensor) -> torch.Tensor:
-        x_r = self.norm_r(x_r.unsqueeze(1))
-        for layer in self.trunk_r:
-            x_r = layer(x_r)
-
-        x_z = self.norm_z(x_z.unsqueeze(1))
-        for layer in self.trunk_z:
-            x_z = layer(x_z)
-
-        x = torch.cat((x_r, x_z), dim=1)
+        x = torch.cat([x_r.unsqueeze(1), x_z.unsqueeze(1)], dim=1)
+        for layer in self.conv_layers:
+            x = layer(x)
         x = self.flatten(x)
-        x = self.act(self.linear_1(x))
+        x = self.act_1(self.norm_1(self.linear_1(x)))
         x = self.linear_2(x)
         return x
 
@@ -83,17 +74,21 @@ class BranchNet(nn.Module):
     def __init__(self, in_dim: int = 9, hidden_dim: int = 128):
         super().__init__()
         self.linear_1 = nn.Linear(in_features=in_dim, out_features=256)
-        self.norm_1 = nn.BatchNorm1d(num_features=256)
+        self.norm_1 = nn.LayerNorm(256)
         self.act_1 = TrainableSwish(beta=1.0)
-        self.linear_2 = nn.Linear(in_features=256, out_features=128)
-        self.norm_2 = nn.BatchNorm1d(num_features=128)
+        self.linear_2 = nn.Linear(in_features=256, out_features=512)
+        self.norm_2 = nn.LayerNorm(512)
         self.act_2 = TrainableSwish(beta=1.0)
-        self.linear_3 = nn.Linear(in_features=128, out_features=hidden_dim)
+        self.linear_3 = nn.Linear(in_features=512, out_features=256)
+        self.norm_3 = nn.LayerNorm(256)
+        self.act_3 = TrainableSwish(beta=1.0)
+        self.linear_4 = nn.Linear(in_features=256, out_features=hidden_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.act_1(self.norm_1(self.linear_1(x)))
         x = self.act_2(self.norm_2(self.linear_2(x)))
-        x = self.linear_3(x)
+        x = self.act_3(self.norm_3(self.linear_3(x)))
+        x = self.linear_4(x)
         return x
 
 
@@ -104,33 +99,40 @@ class DecoderConv(nn.Module):
         assert nz % 2 == 0, f"nz must be a power of 2, got {nz}"
         self.nr = nr
         self.nz = nz
+        
         self.linear = nn.Linear(
             in_features=hidden_dim,
-            out_features=128 * int(self.nr / 2**3) * int(self.nz / 2**3),
+            out_features=256 * int(self.nr / 2**4) * int(self.nz / 2**4),
         )
         self.act = TrainableSwish()
+        self.norm = nn.LayerNorm(256)
+        
         self.decoder = nn.ModuleList()
-        channels = [128, 32, 16, 8]
+        channels = [256, 128, 64, 32, 16]
         for i in range(len(channels) - 1):
             in_channels, out_channels = channels[i], channels[i + 1]
             self.decoder.append(
                 nn.Sequential(
-                    nn.UpsamplingBilinear2d(scale_factor=2),
-                    Conv2dNornAct(in_channels=in_channels, out_channels=out_channels),
+                    nn.ConvTranspose2d(in_channels=in_channels, out_channels=out_channels, kernel_size=4, stride=2, padding=1),
+                    Conv2dNornAct(in_channels=out_channels, out_channels=out_channels, kernel_size=(3, 3)),
                 )
             )
-        self.conv = nn.Conv2d(in_channels=channels[-1], out_channels=1, kernel_size=(1, 1), padding="same")
+        
+        self.conv_out = nn.Conv2d(in_channels=channels[-1], out_channels=1, kernel_size=(3, 3), padding="same")
 
     def forward(self, x_trunk: torch.Tensor, x_branch: torch.Tensor) -> torch.Tensor:
         batch = x_branch.shape[0]
         x = x_branch * x_trunk
         x = self.act(self.linear(x))
-        x = x.reshape((batch, 128, int(self.nr / 2**3), int(self.nz / 2**3)))
+        x = x.reshape((batch, 256, int(self.nr / 2**4), int(self.nz / 2**4)))
+        x = x.permute(0, 2, 3, 1)
+        x = self.norm(x)
+        x = x.permute(0, 3, 1, 2)
 
         for layer in self.decoder:
             x = layer(x)
 
-        x = self.conv(x).squeeze(1)
+        x = self.conv_out(x).squeeze(1)
         return x
 
 

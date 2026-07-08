@@ -45,6 +45,57 @@ def compute_relative_l2(pred: torch.Tensor, target: torch.Tensor, mask: torch.Te
     }
 
 
+def compute_axis_error(pred: torch.Tensor, meta_list: list[dict]) -> dict[str, float]:
+    axis_errors = []
+    for i, meta in enumerate(meta_list):
+        R_axis = meta["R_axis"]
+        Z_axis = meta["Z_axis"]
+        psi_axis_true = meta["psi_axis"]
+        
+        R = meta["R"].numpy()
+        Z = meta["Z"].numpy()
+        
+        idx_r = np.argmin(np.abs(R[:, 0] - R_axis))
+        idx_z = np.argmin(np.abs(Z[0, :] - Z_axis))
+        
+        psi_axis_pred = float(pred[i, idx_r, idx_z])
+        axis_errors.append(np.abs(psi_axis_pred - psi_axis_true) / np.abs(psi_axis_true))
+    
+    return {
+        "mean": float(np.mean(axis_errors)),
+        "median": float(np.median(axis_errors)),
+        "p95": float(np.percentile(axis_errors, 95)),
+        "max": float(np.max(axis_errors)),
+    }
+
+
+def compute_ip_error(pred: torch.Tensor, targets: torch.Tensor, meta_list: list[dict]) -> dict[str, float]:
+    ip_errors = []
+    for i, meta in enumerate(meta_list):
+        psi_bndry = meta["psi_bndry"]
+        psi_axis = meta["psi_axis"]
+        L = meta["L"]
+        
+        dpsi_dR_pred = torch.gradient(pred[i], dim=0)[0]
+        dpsi_dZ_pred = torch.gradient(pred[i], dim=1)[0]
+        
+        bphi_sq_pred = (dpsi_dR_pred**2 + dpsi_dZ_pred**2) / (2 * np.pi)
+        
+        psi_plasma_norm_pred = (pred[i] - psi_bndry) / (psi_axis - psi_bndry)
+        Ip_pred = float(torch.sum(bphi_sq_pred * psi_plasma_norm_pred))
+        
+        Ip_true = float(meta["Ip"])
+        
+        ip_errors.append(np.abs(Ip_pred - Ip_true) / np.abs(Ip_true))
+    
+    return {
+        "mean": float(np.mean(ip_errors)),
+        "median": float(np.median(ip_errors)),
+        "p95": float(np.percentile(ip_errors, 95)),
+        "max": float(np.max(ip_errors)),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, help="Path to best.pt checkpoint.")
@@ -75,7 +126,7 @@ def main() -> None:
     print(f"  Test samples: {len(test_ds)}")
 
     def _collate(batch):
-        measures, R, Z, psi_total, mask, psi_plasma, psi_coils, meta = zip(*batch)
+        measures, R, Z, psi_total, mask, psi_plasma, psi_coils, rhs, meta = zip(*batch)
         return (
             torch.stack(measures),
             torch.stack(R),
