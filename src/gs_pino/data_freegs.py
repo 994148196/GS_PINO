@@ -40,6 +40,34 @@ def interp_fun(f: np.ndarray, RR: np.ndarray, ZZ: np.ndarray, rr: np.ndarray, zz
     return f_int
 
 
+def build_ufno_input(measures: torch.Tensor, R: torch.Tensor, Z: torch.Tensor, psi_coils: torch.Tensor) -> torch.Tensor:
+    B = measures.shape[0]
+    nr, nz = R.shape[-2], R.shape[-1]
+
+    R_norm = R / 2.0
+    Z_norm = Z / 2.0
+
+    Ip_norm = measures[:, 0].view(B, 1, 1).expand(B, nr, nz)
+    paxis_norm = measures[:, 1].view(B, 1, 1).expand(B, nr, nz)
+    alpha_m_norm = measures[:, 2].view(B, 1, 1).expand(B, nr, nz)
+    alpha_n_norm = measures[:, 3].view(B, 1, 1).expand(B, nr, nz)
+    fvac_norm = measures[:, 4].view(B, 1, 1).expand(B, nr, nz)
+
+    coil0_norm = measures[:, 5].view(B, 1, 1).expand(B, nr, nz)
+    coil1_norm = measures[:, 6].view(B, 1, 1).expand(B, nr, nz)
+    coil2_norm = measures[:, 7].view(B, 1, 1).expand(B, nr, nz)
+    coil3_norm = measures[:, 8].view(B, 1, 1).expand(B, nr, nz)
+
+    input_tensor = torch.stack([
+        R_norm, Z_norm,
+        Ip_norm, paxis_norm, alpha_m_norm, alpha_n_norm, fvac_norm,
+        coil0_norm, coil1_norm, coil2_norm, coil3_norm,
+        psi_coils,
+    ], dim=1)
+
+    return input_tensor
+
+
 class FreeBndDataset(Dataset):
     """PyTorch dataset backed by a free-boundary GS .npz archive."""
 

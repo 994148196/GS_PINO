@@ -225,3 +225,32 @@ class UFNO2d(nn.Module):
         for block in self.blocks:
             x = block(x)
         return self.proj(x)
+
+
+class UFNOBlock_v2(nn.Module):
+    def __init__(self, width: int, modes1: int, modes2: int):
+        super().__init__()
+        self.spectral = SpectralConv2d(width, width, modes1, modes2)
+        self.pointwise = nn.Conv2d(width, width, 1)
+        self.norm = nn.GroupNorm(4, width)
+        self.unet = UNetBranch(width)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        x = self.norm(x)
+        x = F.gelu(self.spectral(x) + self.pointwise(x) + self.unet(x))
+        return x + residual
+
+
+class UFNO2d_v2(nn.Module):
+    def __init__(self, in_channels: int, modes1: int = 32, modes2: int = 32, width: int = 128, layers: int = 6):
+        super().__init__()
+        self.lift = nn.Conv2d(in_channels, width, 1)
+        self.blocks = nn.ModuleList([UFNOBlock_v2(width, modes1, modes2) for _ in range(layers)])
+        self.proj = nn.Sequential(nn.Conv2d(width, 256, 1), nn.GELU(), nn.Conv2d(256, 1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.lift(x)
+        for block in self.blocks:
+            x = block(x)
+        return self.proj(x)

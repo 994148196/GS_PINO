@@ -35,6 +35,19 @@ def plasma_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, eps
     return (((pred - target) ** 2) * mask).sum() / (mask.sum() + eps)
 
 
+def curvature_loss(pred: torch.Tensor, R: torch.Tensor, Z: torch.Tensor) -> torch.Tensor:
+    B = pred.shape[0]
+    dR = (R[:, 1, 0] - R[:, 0, 0]).view(B, 1, 1)
+    dZ = (Z[:, 0, 1] - Z[:, 0, 0]).view(B, 1, 1)
+
+    d2psi_dr2 = (pred[:, 2:, :] - 2 * pred[:, 1:-1, :] + pred[:, :-2, :]) / (dR ** 2)
+    d2psi_dz2 = (pred[:, :, 2:] - 2 * pred[:, :, 1:-1] + pred[:, :, :-2]) / (dZ ** 2)
+
+    laplace_psi = d2psi_dr2[:, :, 1:-1] + d2psi_dz2[:, 1:-1, :]
+
+    return (laplace_psi ** 2).mean()
+
+
 def compute_grad_shafranov_kernels(RR: torch.Tensor, ZZ: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     device = RR.device
     hr = RR[:, 1, 0] - RR[:, 0, 0]
@@ -125,7 +138,7 @@ class GSOperatorLoss(nn.Module):
 
 class PlaNetLoss(nn.Module):
     def __init__(self, is_physics_informed: bool = True, scale_mse: float = 1.0, scale_pde: float = 0.1, 
-                 scale_axis: float = 0.1, scale_ip: float = 0.01):
+                 scale_axis: float = 0.1, scale_ip: float = 0.01, scale_curvature: float = 0.5):
         super().__init__()
         self.is_physics_informed = is_physics_informed
         self.loss_mse = nn.MSELoss()
@@ -134,6 +147,7 @@ class PlaNetLoss(nn.Module):
         self.scale_pde = scale_pde
         self.scale_axis = scale_axis
         self.scale_ip = scale_ip
+        self.scale_curvature = scale_curvature
         self.log_dict = {}
 
     def forward(
@@ -156,6 +170,11 @@ class PlaNetLoss(nn.Module):
             return mse_loss
         
         total_loss = mse_loss
+        
+        if self.scale_curvature > 0:
+            curvature_l = self.scale_curvature * curvature_loss(pred, RR, ZZ)
+            self.log_dict["curvature_loss"] = curvature_l.item()
+            total_loss += curvature_l
         
         if psi_coils is not None:
             pred_plasma = pred - psi_coils

@@ -21,9 +21,9 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .data_freegs import FreeBndDataset
+from .data_freegs import FreeBndDataset, build_ufno_input
 from .losses_freegs import global_mse, plasma_mse
-from .models import PlaNetCore
+from .models import PlaNetCore, UFNO2d_v2
 
 
 def compute_relative_l2(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor | None = None) -> dict[str, float]:
@@ -146,7 +146,18 @@ def main() -> None:
     n_measures = checkpoint["n_measures"]
     nr = checkpoint["nr"]
     nz = checkpoint["nz"]
-    model = PlaNetCore(n_measures=n_measures, hidden_dim=params["hidden_dim"], nr=nr, nz=nz).to(device)
+    model_type = params.get("model", "planet")
+    
+    if model_type == "planet":
+        model = PlaNetCore(n_measures=n_measures, hidden_dim=params["hidden_dim"], nr=nr, nz=nz).to(device)
+    else:
+        model = UFNO2d_v2(
+            in_channels=12,
+            modes1=params.get("modes1", 32),
+            modes2=params.get("modes2", 32),
+            width=params.get("width", 128),
+            layers=params.get("layers", 6),
+        ).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
@@ -165,8 +176,13 @@ def main() -> None:
             Z = Z.to(device)
             psi_total = psi_total.to(device)
             mask = mask.to(device)
+            psi_coils = psi_coils.to(device)
 
-            pred = model((measures, R, Z))
+            if model_type == "planet":
+                pred = model((measures, R, Z))
+            else:
+                ufno_input = build_ufno_input(measures, R, Z, psi_coils)
+                pred = model(ufno_input).squeeze(1)
 
             all_preds.append(pred.cpu())
             all_targets.append(psi_total.cpu())

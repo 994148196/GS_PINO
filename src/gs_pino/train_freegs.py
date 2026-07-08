@@ -19,9 +19,9 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import trange
 
-from .data_freegs import FreeBndDataset, split_indices
+from .data_freegs import FreeBndDataset, split_indices, build_ufno_input
 from .losses_freegs import PlaNetLoss, compute_grad_shafranov_kernels, global_mse
-from .models import PlaNetCore
+from .models import PlaNetCore, UFNO2d_v2
 
 
 def _stack_metadata(meta_list: list[dict]) -> dict[str, torch.Tensor]:
@@ -52,7 +52,7 @@ def _collate(batch):
 
 
 def run_epoch(
-    model: PlaNetCore,
+    model: torch.nn.Module,
     loader: DataLoader,
     opt: torch.optim.Optimizer | None,
     device: torch.device,
@@ -63,6 +63,8 @@ def run_epoch(
     pde_scale: float = 1.0,
     axis_scale: float = 1.0,
     ip_scale: float = 1.0,
+    curvature_scale: float = 1.0,
+    model_type: str = "planet",
 ) -> dict[str, float]:
     train = opt is not None
     model.train(train)
@@ -70,6 +72,7 @@ def run_epoch(
     total_pde = 0.0
     total_axis = 0.0
     total_ip = 0.0
+    total_curvature = 0.0
     total_normalized_error = 0.0
     n_samples = 0
 
@@ -95,15 +98,21 @@ def run_epoch(
             L_ker, Df_ker = compute_grad_shafranov_kernels(R, Z)
 
             with ctx:
-                pred = model((measures, R, Z))
+                if model_type == "planet":
+                    pred = model((measures, R, Z))
+                else:
+                    ufno_input = build_ufno_input(measures, R, Z, psi_coils)
+                    pred = model(ufno_input).squeeze(1)
 
                 original_scale_pde = loss_module.scale_pde
                 original_scale_axis = loss_module.scale_axis
                 original_scale_ip = loss_module.scale_ip
+                original_scale_curvature = loss_module.scale_curvature
                 
                 loss_module.scale_pde = original_scale_pde * pde_scale
                 loss_module.scale_axis = original_scale_axis * axis_scale
                 loss_module.scale_ip = original_scale_ip * ip_scale
+                loss_module.scale_curvature = original_scale_curvature * curvature_scale
 
                 loss = loss_module(
                     pred=pred,
@@ -121,6 +130,7 @@ def run_epoch(
                 loss_module.scale_pde = original_scale_pde
                 loss_module.scale_axis = original_scale_axis
                 loss_module.scale_ip = original_scale_ip
+                loss_module.scale_curvature = original_scale_curvature
 
             if train:
                 if amp:
@@ -146,6 +156,7 @@ def run_epoch(
             total_pde += float(loss_module.log_dict.get("pde_loss", 0)) * batch_size
             total_axis += float(loss_module.log_dict.get("axis_loss", 0)) * batch_size
             total_ip += float(loss_module.log_dict.get("ip_loss", 0)) * batch_size
+            total_curvature += float(loss_module.log_dict.get("curvature_loss", 0)) * batch_size
             
             target_max = psi_total.max(dim=1)[0].max(dim=1)[0]
             target_min = psi_total.min(dim=1)[0].min(dim=1)[0]
@@ -162,8 +173,9 @@ def run_epoch(
         "pde": total_pde / n_samples,
         "axis": total_axis / n_samples,
         "ip": total_ip / n_samples,
+        "curvature": total_curvature / n_samples,
         "normalized_error": total_normalized_error / n_samples,
-        "total": (total_mse + total_pde + total_axis + total_ip) / n_samples,
+        "total": (total_mse + total_pde + total_axis + total_ip + total_curvature) / n_samples,
     }
 
 
@@ -174,11 +186,17 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=300, help="Number of training epochs.")
     parser.add_argument("--batch-size", type=int, default=4, help="Training batch size.")
     parser.add_argument("--lr", type=float, default=5e-4, help="AdamW learning rate.")
+    parser.add_argument("--model", type=str, default="planet", choices=["planet", "ufno"], help="Model architecture: planet (PlaNetCore) or ufno (U-FNO v2).")
     parser.add_argument("--hidden-dim", type=int, default=256, help="Hidden dimension for PlaNetCore.")
+    parser.add_argument("--width", type=int, default=128, help="Width dimension for U-FNO.")
+    parser.add_argument("--layers", type=int, default=6, help="Number of layers for U-FNO.")
+    parser.add_argument("--modes1", type=int, default=32, help="Number of Fourier modes in R direction.")
+    parser.add_argument("--modes2", type=int, default=32, help="Number of Fourier modes in Z direction.")
     parser.add_argument("--scale-mse", type=float, default=1.0, help="Weight for MSE loss.")
     parser.add_argument("--scale-pde", type=float, default=0.01, help="Weight for PDE loss.")
     parser.add_argument("--scale-axis", type=float, default=0.01, help="Weight for axis constraint loss.")
     parser.add_argument("--scale-ip", type=float, default=0.001, help="Weight for Ip constraint loss.")
+    parser.add_argument("--scale-curvature", type=float, default=0.5, help="Weight for curvature (smoothness) loss.")
     parser.add_argument("--clip-grad", type=float, default=1.0, help="Gradient clipping max norm.")
     parser.add_argument("--accum-steps", type=int, default=2, help="Gradient accumulation steps.")
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True, help="Enable mixed precision.")
@@ -201,8 +219,12 @@ def main() -> None:
     print(f"{'='*60}")
     print(f"  Dataset: {n_samples} samples")
     print(f"  Train: {len(train_idx)}, Val: {len(val_idx)}, Test: {len(test_idx)}")
-    print(f"  Model: hidden_dim={args.hidden_dim}")
-    print(f"  Loss weights: mse={args.scale_mse}, pde={args.scale_pde}, axis={args.scale_axis}, ip={args.scale_ip}")
+    print(f"  Model: {args.model}")
+    if args.model == "planet":
+        print(f"    hidden_dim={args.hidden_dim}")
+    else:
+        print(f"    width={args.width}, layers={args.layers}, modes1={args.modes1}, modes2={args.modes2}")
+    print(f"  Loss weights: mse={args.scale_mse}, pde={args.scale_pde}, axis={args.scale_axis}, ip={args.scale_ip}, curvature={args.scale_curvature}")
     print(f"{'='*60}\n")
 
     train_ds = FreeBndDataset(args.data, train_idx)
@@ -220,10 +242,18 @@ def main() -> None:
         device = torch.device("cpu")
         print(f"  Device: {device} (CUDA not available, using CPU)")
         args.amp = False
+    
+    if args.model == "ufno":
+        args.amp = False
+        print("  AMP disabled for U-FNO (complex number support)")
     n_measures = train_ds.n_measures
     nr, nz = train_ds[0][1].shape
     print(f"  Input measures: {n_measures}, Grid size: {nr}x{nz}")
-    model = PlaNetCore(n_measures=n_measures, hidden_dim=args.hidden_dim, nr=nr, nz=nz).to(device)
+    
+    if args.model == "planet":
+        model = PlaNetCore(n_measures=n_measures, hidden_dim=args.hidden_dim, nr=nr, nz=nz).to(device)
+    else:
+        model = UFNO2d_v2(in_channels=12, modes1=args.modes1, modes2=args.modes2, width=args.width, layers=args.layers).to(device)
     
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Model parameters: {total_params:,}")
@@ -237,6 +267,7 @@ def main() -> None:
         scale_pde=args.scale_pde,
         scale_axis=args.scale_axis,
         scale_ip=args.scale_ip,
+        scale_curvature=args.scale_curvature,
     )
 
     print(f"  Optimizer: AdamW, lr={args.lr}, weight_decay=1e-6")
@@ -253,10 +284,11 @@ def main() -> None:
     pbar = trange(args.epochs, desc="Training")
     patience_counter = 0
 
-    mse_only_epochs = 50
-    pde_ramp_epochs = 80
-    axis_start_epoch = 30
-    ip_start_epoch = 50
+    mse_only_epochs = 100
+    pde_ramp_epochs = 150
+    axis_start_epoch = 80
+    ip_start_epoch = 100
+    curvature_start_epoch = 120
 
     for epoch in pbar:
         if epoch < args.warmup_epochs:
@@ -276,15 +308,20 @@ def main() -> None:
 
         axis_scale = 0.0 if epoch < axis_start_epoch else 1.0
         ip_scale = 0.0 if epoch < ip_start_epoch else 1.0
+        curvature_scale = 0.0 if epoch < curvature_start_epoch else 1.0
 
         train_losses = run_epoch(
             model, train_loader, opt, device, loss_module, 
             clip_grad=args.clip_grad, amp=args.amp, accum_steps=args.accum_steps,
-            pde_scale=pde_scale, axis_scale=axis_scale, ip_scale=ip_scale
+            pde_scale=pde_scale, axis_scale=axis_scale, ip_scale=ip_scale,
+            curvature_scale=curvature_scale,
+            model_type=args.model
         )
         val_losses = run_epoch(
             model, val_loader, None, device, loss_module,
-            pde_scale=pde_scale, axis_scale=axis_scale, ip_scale=ip_scale
+            pde_scale=pde_scale, axis_scale=axis_scale, ip_scale=ip_scale,
+            curvature_scale=curvature_scale,
+            model_type=args.model
         ) if len(val_ds) else train_losses
 
         if epoch >= args.warmup_epochs:
@@ -296,16 +333,19 @@ def main() -> None:
             "pde_scale": pde_scale,
             "axis_scale": axis_scale,
             "ip_scale": ip_scale,
+            "curvature_scale": curvature_scale,
             "train_rmse": train_losses["rmse"],
             "train_pde": train_losses["pde"],
             "train_axis": train_losses["axis"],
             "train_ip": train_losses["ip"],
+            "train_curvature": train_losses["curvature"],
             "train_normalized_error": train_losses["normalized_error"],
             "train_total": train_losses["total"],
             "val_rmse": val_losses["rmse"],
             "val_pde": val_losses["pde"],
             "val_axis": val_losses["axis"],
             "val_ip": val_losses["ip"],
+            "val_curvature": val_losses["curvature"],
             "val_normalized_error": val_losses["normalized_error"],
             "val_total": val_losses["total"],
         })
@@ -316,6 +356,7 @@ def main() -> None:
             pde=f"{train_losses['pde']:.6f}",
             axis=f"{train_losses['axis']:.6f}",
             ip=f"{train_losses['ip']:.6f}",
+            curv=f"{train_losses['curvature']:.6f}",
             val_rmse=f"{val_losses['rmse']:.5f}",
             val_norm=f"{val_losses['normalized_error']:.3f}",
             val=f"{val_losses['total']:.6f}",
@@ -421,10 +462,12 @@ def plot_training_history(history: list[dict], output_dir: Path) -> None:
     ax.grid(alpha=0.3)
 
     ax = axes[1, 3]
-    ax.plot(epochs, [h.get("lr", 1e-3) for h in history], "g-")
+    ax.plot(epochs, [h.get("train_curvature", 0) for h in history], "b-", label="Train")
+    ax.plot(epochs, [h.get("val_curvature", 0) for h in history], "r--", label="Val")
     ax.set_xlabel("Epoch")
-    ax.set_ylabel("Learning Rate")
-    ax.set_title("Learning Rate (Cosine Annealing)")
+    ax.set_ylabel("Curvature Loss")
+    ax.set_title("Curvature (Smoothness) Loss")
+    ax.legend()
     ax.grid(alpha=0.3)
 
     fig.savefig(output_dir / "training_curves.png", dpi=150)
