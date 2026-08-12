@@ -126,7 +126,7 @@ def main() -> None:
     print(f"  Test samples: {len(test_ds)}")
 
     def _collate(batch):
-        measures, R, Z, psi_total, mask, psi_plasma, psi_coils, rhs, meta = zip(*batch)
+        measures, R, Z, psi_total, mask, psi_plasma, psi_coils, rhs, interior_mask, meta = zip(*batch)
         return (
             torch.stack(measures),
             torch.stack(R),
@@ -135,6 +135,7 @@ def main() -> None:
             torch.stack(mask),
             torch.stack(psi_plasma),
             torch.stack(psi_coils),
+            torch.stack(interior_mask),
             list(meta),
         )
 
@@ -149,7 +150,25 @@ def main() -> None:
     model_type = params.get("model", "planet")
     
     if model_type == "planet":
-        model = PlaNetCore(n_measures=n_measures, hidden_dim=params["hidden_dim"], nr=nr, nz=nz).to(device)
+        model = PlaNetCore(
+            n_measures=n_measures,
+            hidden_dim=params["hidden_dim"],
+            nr=nr,
+            nz=nz,
+            dropout=params.get("dropout", 0.0),
+            fourier_freqs=params.get("fourier_freqs", 0),
+            use_coil_input=params.get("use_coil_input", False),
+        ).to(device)
+    elif model_type == "planet_attn":
+        model = PlaNetAttention(
+            n_measures=n_measures,
+            hidden_dim=params["hidden_dim"],
+            nr=nr,
+            nz=nz,
+            dropout=params.get("dropout", 0.0),
+            fourier_freqs=params.get("fourier_freqs", 0),
+            use_coil_input=params.get("use_coil_input", False),
+        ).to(device)
     else:
         model = UFNO2d_v2(
             in_channels=12,
@@ -169,58 +188,150 @@ def main() -> None:
     total_plasma_mse = 0.0
     n_samples = 0
 
+    predict_plasma = checkpoint.get("predict_plasma", False)
+    
+    all_preds = []
+    all_preds_total = []
+    all_targets_plasma = []
+    all_targets_total = []
+    all_masks = []
+    all_interior_masks = []
+    
+    total_global_mse = 0.0
+    total_plasma_mse = 0.0
+    total_global_mse_total = 0.0
+    total_plasma_mse_total = 0.0
+    n_samples = 0
+
     with torch.no_grad():
-        for measures, R, Z, psi_total, mask, psi_plasma, psi_coils, meta_list in tqdm(test_loader, desc="Evaluating"):
+        for measures, R, Z, psi_total, mask, psi_plasma, psi_coils, interior_mask, meta_list in tqdm(test_loader, desc="Evaluating"):
             measures = measures.to(device)
             R = R.to(device)
             Z = Z.to(device)
             psi_total = psi_total.to(device)
+            psi_plasma = psi_plasma.to(device)
             mask = mask.to(device)
             psi_coils = psi_coils.to(device)
+            interior_mask = interior_mask.to(device)
 
-            if model_type == "planet":
-                pred = model((measures, R, Z))
+            if model_type in ("planet", "planet_attn"):
+                pred = model((measures, R, Z, psi_coils))
             else:
-                ufno_input = build_ufno_input(measures, R, Z, psi_coils)
+                ufno_input = build_ufno_input(measures, R, Z, psi_coils).to(device)
                 pred = model(ufno_input).squeeze(1)
 
-            all_preds.append(pred.cpu())
-            all_targets.append(psi_total.cpu())
-            all_masks.append(mask.cpu())
+            if predict_plasma:
+                pred_total = pred + psi_coils
+            else:
+                pred_total = pred
 
-            loss_global = global_mse(pred, psi_total)
-            loss_plasma = plasma_mse(pred, psi_total, mask)
+            all_preds.append(pred.cpu())
+            all_preds_total.append(pred_total.cpu())
+            all_targets_plasma.append(psi_plasma.cpu())
+            all_targets_total.append(psi_total.cpu())
+            all_masks.append(mask.cpu())
+            all_interior_masks.append(interior_mask.cpu())
+
+            eval_mask = interior_mask if params.get("use_coil_input", False) else None
+            
+            if predict_plasma:
+                if eval_mask is not None:
+                    loss_global = (((pred - psi_plasma) ** 2) * eval_mask).mean()
+                    loss_plasma = (((pred - psi_plasma) ** 2) * mask * eval_mask).mean()
+                    loss_global_total = (((pred_total - psi_total) ** 2) * eval_mask).mean()
+                    loss_plasma_total = (((pred_total - psi_total) ** 2) * mask * eval_mask).mean()
+                else:
+                    loss_global = global_mse(pred, psi_plasma)
+                    loss_plasma = plasma_mse(pred, psi_plasma, mask)
+                    loss_global_total = global_mse(pred_total, psi_total)
+                    loss_plasma_total = plasma_mse(pred_total, psi_total, mask)
+            else:
+                if eval_mask is not None:
+                    loss_global = (((pred - psi_total) ** 2) * eval_mask).mean()
+                    loss_plasma = (((pred - psi_total) ** 2) * mask * eval_mask).mean()
+                else:
+                    loss_global = global_mse(pred, psi_total)
+                    loss_plasma = plasma_mse(pred, psi_total, mask)
+                loss_global_total = loss_global
+                loss_plasma_total = loss_plasma
             
             batch_size = measures.shape[0]
             total_global_mse += float(loss_global) * batch_size
             total_plasma_mse += float(loss_plasma) * batch_size
+            total_global_mse_total += float(loss_global_total) * batch_size
+            total_plasma_mse_total += float(loss_plasma_total) * batch_size
             n_samples += batch_size
 
     all_preds = torch.cat(all_preds)
-    all_targets = torch.cat(all_targets)
+    all_preds_total = torch.cat(all_preds_total)
+    all_targets_plasma = torch.cat(all_targets_plasma)
+    all_targets_total = torch.cat(all_targets_total)
     all_masks = torch.cat(all_masks)
+    all_interior_masks = torch.cat(all_interior_masks)
 
-    global_rel_l2 = compute_relative_l2(all_preds, all_targets)
-    plasma_rel_l2 = compute_relative_l2(all_preds, all_targets, all_masks)
+    eval_mask = all_interior_masks if params.get("use_coil_input", False) else None
+    
+    if predict_plasma:
+        if eval_mask is not None:
+            global_rel_l2 = compute_relative_l2(all_preds, all_targets_plasma, eval_mask)
+            plasma_rel_l2 = compute_relative_l2(all_preds, all_targets_plasma, all_masks * eval_mask)
+            global_rel_l2_total = compute_relative_l2(all_preds_total, all_targets_total, eval_mask)
+            plasma_rel_l2_total = compute_relative_l2(all_preds_total, all_targets_total, all_masks * eval_mask)
+        else:
+            global_rel_l2 = compute_relative_l2(all_preds, all_targets_plasma)
+            plasma_rel_l2 = compute_relative_l2(all_preds, all_targets_plasma, all_masks)
+            global_rel_l2_total = compute_relative_l2(all_preds_total, all_targets_total)
+            plasma_rel_l2_total = compute_relative_l2(all_preds_total, all_targets_total, all_masks)
+    else:
+        if eval_mask is not None:
+            global_rel_l2 = compute_relative_l2(all_preds, all_targets_total, eval_mask)
+            plasma_rel_l2 = compute_relative_l2(all_preds, all_targets_total, all_masks * eval_mask)
+        else:
+            global_rel_l2 = compute_relative_l2(all_preds, all_targets_total)
+            plasma_rel_l2 = compute_relative_l2(all_preds, all_targets_total, all_masks)
+        global_rel_l2_total = global_rel_l2
+        plasma_rel_l2_total = plasma_rel_l2
 
     print(f"\n{'='*60}")
     print(f"  Test Set Metrics")
     print(f"{'='*60}")
-    print(f"\n  [Data Loss]")
-    print(f"    Global MSE: {total_global_mse / n_samples:.6f}")
-    print(f"    Plasma MSE: {total_plasma_mse / n_samples:.6f}")
     
-    print(f"\n  [Relative L2 Error - Global]")
-    print(f"    Mean: {global_rel_l2['mean']:.4f}")
-    print(f"    Median: {global_rel_l2['median']:.4f}")
-    print(f"    P95: {global_rel_l2['p95']:.4f}")
-    print(f"    Max: {global_rel_l2['max']:.4f}")
-    
-    print(f"\n  [Relative L2 Error - Plasma Region]")
-    print(f"    Mean: {plasma_rel_l2['mean']:.4f}")
-    print(f"    Median: {plasma_rel_l2['median']:.4f}")
-    print(f"    P95: {plasma_rel_l2['p95']:.4f}")
-    print(f"    Max: {plasma_rel_l2['max']:.4f}")
+    if predict_plasma:
+        print(f"\n  [Data Loss - psi_plasma]")
+        print(f"    Global MSE: {total_global_mse / n_samples:.6f}")
+        print(f"    Plasma MSE: {total_plasma_mse / n_samples:.6f}")
+        
+        print(f"\n  [Relative L2 Error - psi_plasma]")
+        print(f"    Global Mean: {global_rel_l2['mean']:.4f}")
+        print(f"    Global Median: {global_rel_l2['median']:.4f}")
+        print(f"    Plasma Mean: {plasma_rel_l2['mean']:.4f}")
+        print(f"    Plasma Median: {plasma_rel_l2['median']:.4f}")
+        
+        print(f"\n  [Data Loss - psi_total (pred_plasma + psi_coils)]")
+        print(f"    Global MSE: {total_global_mse_total / n_samples:.6f}")
+        print(f"    Plasma MSE: {total_plasma_mse_total / n_samples:.6f}")
+        
+        print(f"\n  [Relative L2 Error - psi_total]")
+        print(f"    Global Mean: {global_rel_l2_total['mean']:.4f}")
+        print(f"    Global Median: {global_rel_l2_total['median']:.4f}")
+        print(f"    Plasma Mean: {plasma_rel_l2_total['mean']:.4f}")
+        print(f"    Plasma Median: {plasma_rel_l2_total['median']:.4f}")
+    else:
+        print(f"\n  [Data Loss]")
+        print(f"    Global MSE: {total_global_mse / n_samples:.6f}")
+        print(f"    Plasma MSE: {total_plasma_mse / n_samples:.6f}")
+        
+        print(f"\n  [Relative L2 Error - Global]")
+        print(f"    Mean: {global_rel_l2['mean']:.4f}")
+        print(f"    Median: {global_rel_l2['median']:.4f}")
+        print(f"    P95: {global_rel_l2['p95']:.4f}")
+        print(f"    Max: {global_rel_l2['max']:.4f}")
+        
+        print(f"\n  [Relative L2 Error - Plasma Region]")
+        print(f"    Mean: {plasma_rel_l2['mean']:.4f}")
+        print(f"    Median: {plasma_rel_l2['median']:.4f}")
+        print(f"    P95: {plasma_rel_l2['p95']:.4f}")
+        print(f"    Max: {plasma_rel_l2['max']:.4f}")
 
     output_dir = Path(args.checkpoint).parent
     metrics = {
@@ -229,15 +340,26 @@ def main() -> None:
         "global_rel_l2": global_rel_l2,
         "plasma_rel_l2": plasma_rel_l2,
         "n_samples": n_samples,
+        "predict_plasma": predict_plasma,
     }
+    if predict_plasma:
+        metrics.update({
+            "global_mse_total": total_global_mse_total / n_samples,
+            "plasma_mse_total": total_plasma_mse_total / n_samples,
+            "global_rel_l2_total": global_rel_l2_total,
+            "plasma_rel_l2_total": plasma_rel_l2_total,
+        })
 
     (output_dir / "test_metrics.json").write_text(json.dumps(metrics, indent=2))
     print(f"\n  Metrics saved to: {output_dir / 'test_metrics.json'}")
 
     torch.save({
         "preds": all_preds.numpy(),
-        "targets": all_targets.numpy(),
+        "preds_total": all_preds_total.numpy(),
+        "targets_plasma": all_targets_plasma.numpy(),
+        "targets_total": all_targets_total.numpy(),
         "masks": all_masks.numpy(),
+        "interior_masks": all_interior_masks.numpy(),
         "indices": test_idx,
     }, output_dir / "test_predictions.pt")
     print(f"  Predictions saved to: {output_dir / 'test_predictions.pt'}")

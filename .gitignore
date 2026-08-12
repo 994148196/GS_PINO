@@ -13,4 +13,8 @@ venv/
 .ruff_cache/
 data/
 outputs/
+paper/
+.trae/
+.vscode/
+Cerfon_Solovev-*.pdf
 *.log

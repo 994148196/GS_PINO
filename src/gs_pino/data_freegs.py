@@ -41,22 +41,32 @@ def interp_fun(f: np.ndarray, RR: np.ndarray, ZZ: np.ndarray, rr: np.ndarray, zz
 
 
 def build_ufno_input(measures: torch.Tensor, R: torch.Tensor, Z: torch.Tensor, psi_coils: torch.Tensor) -> torch.Tensor:
+    """Build the 12-channel U-FNO input tensor.
+
+    Channel layout: [R_norm, Z_norm, Ip, paxis, alpha_m, alpha_n, fvac,
+                     coil0, coil1, coil2, coil3, psi_coils]
+
+    Note: `measures` follows the dataset convention
+    [coil0, coil1, coil2, coil3, Ip, paxis, alpha_m, alpha_n, fvac]
+    (see FreeBndDataset.__getitem__), i.e. coil currents first, then
+    plasma parameters.
+    """
     B = measures.shape[0]
     nr, nz = R.shape[-2], R.shape[-1]
 
     R_norm = R / 2.0
     Z_norm = Z / 2.0
 
-    Ip_norm = measures[:, 0].view(B, 1, 1).expand(B, nr, nz)
-    paxis_norm = measures[:, 1].view(B, 1, 1).expand(B, nr, nz)
-    alpha_m_norm = measures[:, 2].view(B, 1, 1).expand(B, nr, nz)
-    alpha_n_norm = measures[:, 3].view(B, 1, 1).expand(B, nr, nz)
-    fvac_norm = measures[:, 4].view(B, 1, 1).expand(B, nr, nz)
+    coil0_norm = measures[:, 0].view(B, 1, 1).expand(B, nr, nz)
+    coil1_norm = measures[:, 1].view(B, 1, 1).expand(B, nr, nz)
+    coil2_norm = measures[:, 2].view(B, 1, 1).expand(B, nr, nz)
+    coil3_norm = measures[:, 3].view(B, 1, 1).expand(B, nr, nz)
 
-    coil0_norm = measures[:, 5].view(B, 1, 1).expand(B, nr, nz)
-    coil1_norm = measures[:, 6].view(B, 1, 1).expand(B, nr, nz)
-    coil2_norm = measures[:, 7].view(B, 1, 1).expand(B, nr, nz)
-    coil3_norm = measures[:, 8].view(B, 1, 1).expand(B, nr, nz)
+    Ip_norm = measures[:, 4].view(B, 1, 1).expand(B, nr, nz)
+    paxis_norm = measures[:, 5].view(B, 1, 1).expand(B, nr, nz)
+    alpha_m_norm = measures[:, 6].view(B, 1, 1).expand(B, nr, nz)
+    alpha_n_norm = measures[:, 7].view(B, 1, 1).expand(B, nr, nz)
+    fvac_norm = measures[:, 8].view(B, 1, 1).expand(B, nr, nz)
 
     input_tensor = torch.stack([
         R_norm, Z_norm,
@@ -71,7 +81,7 @@ def build_ufno_input(measures: torch.Tensor, R: torch.Tensor, Z: torch.Tensor, p
 class FreeBndDataset(Dataset):
     """PyTorch dataset backed by a free-boundary GS .npz archive."""
 
-    def __init__(self, path: str, indices: np.ndarray | None = None, param_norm: Normalization | None = None, nr: int = 64, nz: int = 64):
+    def __init__(self, path: str, indices: np.ndarray | None = None, param_norm: Normalization | None = None, nr: int = 64, nz: int = 64, noise_std: float = 0.0):
         raw = np.load(path)
         self.base_R = raw["R"]
         self.base_Z = raw["Z"]
@@ -88,6 +98,7 @@ class FreeBndDataset(Dataset):
 
         self.nr = nr
         self.nz = nz
+        self.noise_std = noise_std
 
         n = self.params.shape[0]
         self.indices = np.arange(n) if indices is None else indices
@@ -110,6 +121,7 @@ class FreeBndDataset(Dataset):
         self.psi_plasma_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
         self.psi_coils_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
         self.mask_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
+        self.interior_mask_data = np.zeros((n, self.nr, self.nz), dtype=np.float32)
         self.rhs_data = np.zeros((n, self.nr - 2, self.nz - 2), dtype=np.float32)
 
         for idx in range(n):
@@ -127,6 +139,23 @@ class FreeBndDataset(Dataset):
                 self.psi_coils_data[idx] = interp_fun(f=self.base_psi_coils[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
                 self.mask_data[idx] = interp_fun(f=self.base_mask[i], RR=base_R, ZZ=base_Z, rr=R, zz=Z)
                 
+                r_min, r_max = R.min(), R.max()
+                z_min, z_max = Z.min(), Z.max()
+                
+                dr = r_max - r_min
+                dz = z_max - z_min
+                buffer = min(dr, dz) * 0.1
+                
+                r_dist = np.minimum(R - r_min, r_max - R)
+                z_dist = np.minimum(Z - z_min, z_max - Z)
+                dist = np.minimum(r_dist, z_dist)
+                
+                interior_mask = np.where(dist >= buffer, 1.0, 
+                                        np.where(dist >= buffer * 0.5, 
+                                                 (dist - buffer * 0.5) / (buffer * 0.5) * 0.9 + 0.1, 
+                                                 0.1))
+                self.interior_mask_data[idx] = interior_mask.astype(np.float32)
+                
                 if self.base_rhs is not None:
                     self.rhs_data[idx] = interp_fun(f=self.base_rhs[i], RR=base_R[1:-1, 1:-1], ZZ=base_Z[1:-1, 1:-1], rr=R[1:-1, 1:-1], zz=Z[1:-1, 1:-1])
                 else:
@@ -138,6 +167,24 @@ class FreeBndDataset(Dataset):
                 self.psi_plasma_data[idx] = self.base_psi_plasma[i]
                 self.psi_coils_data[idx] = self.base_psi_coils[i]
                 self.mask_data[idx] = self.base_mask[i]
+                
+                r_min, r_max = R.min(), R.max()
+                z_min, z_max = Z.min(), Z.max()
+                
+                dr = r_max - r_min
+                dz = z_max - z_min
+                buffer = min(dr, dz) * 0.1
+                
+                r_dist = np.minimum(R - r_min, r_max - R)
+                z_dist = np.minimum(Z - z_min, z_max - Z)
+                dist = np.minimum(r_dist, z_dist)
+                
+                interior_mask = np.where(dist >= buffer, 1.0, 
+                                        np.where(dist >= buffer * 0.5, 
+                                                 (dist - buffer * 0.5) / (buffer * 0.5) * 0.9 + 0.1, 
+                                                 0.1))
+                self.interior_mask_data[idx] = interior_mask.astype(np.float32)
+                
                 self.rhs_data[idx] = self.base_rhs[i] if self.base_rhs is not None else np.zeros((self.nr - 2, self.nz - 2), dtype=np.float32)
 
             self.R_data[idx] = R.astype(np.float32)
@@ -152,6 +199,10 @@ class FreeBndDataset(Dataset):
         coil_currents = self.coil_currents[i].astype(np.float32)
         params = self.params[i].astype(np.float32)
 
+        if self.noise_std > 0:
+            noise = np.random.normal(0, self.noise_std, coil_currents.shape).astype(np.float32)
+            coil_currents = coil_currents + noise
+
         measures = np.concatenate([coil_currents, params], axis=0)
         measures = self.param_norm.apply(measures).astype(np.float32)
 
@@ -161,6 +212,7 @@ class FreeBndDataset(Dataset):
         psi_plasma = self.psi_plasma_data[item]
         psi_coils = self.psi_coils_data[item]
         mask = self.mask_data[item]
+        interior_mask = self.interior_mask_data[item]
         rhs = self.rhs_data[item]
 
         metadata = {
@@ -189,6 +241,7 @@ class FreeBndDataset(Dataset):
             torch.from_numpy(psi_plasma),
             torch.from_numpy(psi_coils),
             torch.from_numpy(rhs),
+            torch.from_numpy(interior_mask),
             metadata,
         )
 

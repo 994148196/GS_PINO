@@ -92,34 +92,34 @@ def run_epoch(
                 loss_pde = torch.tensor(0.0, device=device)
                 if pde_weight > 0:
                     loss_pde = pde_weight * gs_residual_loss(
-                        pred,
-                        R=meta["R"],
-                        Z=meta["Z"],
-                        mask=mask,
-                        L=meta["profile_params"][:, 0],
-                        Beta0=meta["profile_params"][:, 1],
-                        R0=meta["R0"],
-                        alpha_m=meta["alpha_m"],
-                        alpha_n=meta["alpha_n"],
-                        psi_axis=meta["psi_axis"],
-                        psi_lcfs=meta["psi_lcfs"],
-                    )
+                            pred,
+                            R=meta["R"],
+                            Z=meta["Z"],
+                            mask=mask,
+                            L=meta["profile_params_raw"][:, 0],
+                            Beta0=meta["profile_params_raw"][:, 1],
+                            R0=meta["R0"],
+                            alpha_m=meta["alpha_m"],
+                            alpha_n=meta["alpha_n"],
+                            psi_axis=meta["psi_axis"],
+                            psi_lcfs=meta["psi_lcfs"],
+                        )
 
                 # ---- Ip 积分约束 (可选) ----
                 loss_ip = torch.tensor(0.0, device=device)
                 if ip_weight > 0:
                     loss_ip = ip_weight * ip_constraint_loss(
-                        pred,
-                        R=meta["R"],
-                        Z=meta["Z"],
-                        mask=mask,
-                        L=meta["profile_params"][:, 0],
-                        Beta0=meta["profile_params"][:, 1],
-                        R0=meta["R0"],
-                        alpha_m=meta["alpha_m"],
-                        alpha_n=meta["alpha_n"],
-                        Ip_target=params[:, 4].to(device),
-                    )
+                            pred,
+                            R=meta["R"],
+                            Z=meta["Z"],
+                            mask=mask,
+                            L=meta["profile_params_raw"][:, 0],
+                            Beta0=meta["profile_params_raw"][:, 1],
+                            R0=meta["R0"],
+                            alpha_m=meta["alpha_m"],
+                            alpha_n=meta["alpha_n"],
+                            Ip_target=params[:, 4].to(device),
+                        )
 
                 # ---- 磁轴约束 (psi_bar(R_axis, Z_axis) = 1) ----
                 loss_axis = torch.tensor(0.0, device=device)
@@ -204,7 +204,7 @@ def main() -> None:
     print(f"{'='*60}\n")
 
     train_ds = GSDataset(args.data, train_idx)
-    val_ds = GSDataset(args.data, val_idx, train_ds.param_norm)
+    val_ds = GSDataset(args.data, val_idx, train_ds.param_norm, train_ds.profile_norm)
 
     # DataLoader must return per-sample metadata (not a single collated tensor).
     # We use a custom collate that preserves the metadata list-of-dicts.

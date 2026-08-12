@@ -137,8 +137,9 @@ class GSOperatorLoss(nn.Module):
 
 
 class PlaNetLoss(nn.Module):
-    def __init__(self, is_physics_informed: bool = True, scale_mse: float = 1.0, scale_pde: float = 0.1, 
-                 scale_axis: float = 0.1, scale_ip: float = 0.01, scale_curvature: float = 0.5):
+    # 默认权重与 train_freegs CLI 默认值保持一致（--scale-pde 0.01 --scale-axis 0.01 --scale-ip 0.001）
+    def __init__(self, is_physics_informed: bool = True, scale_mse: float = 1.0, scale_pde: float = 0.01,
+                 scale_axis: float = 0.01, scale_ip: float = 0.001, scale_curvature: float = 0.5):
         super().__init__()
         self.is_physics_informed = is_physics_informed
         self.loss_mse = nn.MSELoss()
@@ -161,9 +162,14 @@ class PlaNetLoss(nn.Module):
         ZZ: torch.Tensor,
         psi_coils: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
+        interior_mask: torch.Tensor | None = None,
         meta: dict | None = None,
+        predict_plasma: bool = False,
     ) -> torch.Tensor:
-        mse_loss = self.scale_mse * self.loss_mse(input=pred, target=target)
+        if interior_mask is not None:
+            mse_loss = self.scale_mse * (((pred - target) ** 2) * interior_mask).mean()
+        else:
+            mse_loss = self.scale_mse * self.loss_mse(input=pred, target=target)
         self.log_dict["mse_loss"] = mse_loss.item()
         
         if not self.is_physics_informed:
@@ -176,7 +182,9 @@ class PlaNetLoss(nn.Module):
             self.log_dict["curvature_loss"] = curvature_l.item()
             total_loss += curvature_l
         
-        if psi_coils is not None:
+        if predict_plasma:
+            pred_plasma = pred
+        elif psi_coils is not None:
             pred_plasma = pred - psi_coils
         else:
             pred_plasma = pred
@@ -197,11 +205,12 @@ class PlaNetLoss(nn.Module):
                 pred.unsqueeze(1),
                 R=RR,
                 Z=ZZ,
-                psi_coils=psi_coils.unsqueeze(1),
+                psi_coils=psi_coils.unsqueeze(1) if psi_coils is not None else None,
                 psi_axis=meta["psi_axis"],
                 psi_bndry=meta["psi_bndry"],
                 R_axis=meta["R_axis"],
                 Z_axis=meta["Z_axis"],
+                predict_plasma=predict_plasma,
             )
             self.log_dict["axis_loss"] = axis_loss.item()
             total_loss += axis_loss
@@ -212,7 +221,7 @@ class PlaNetLoss(nn.Module):
                 R=RR,
                 Z=ZZ,
                 mask=mask.unsqueeze(1),
-                psi_coils=psi_coils.unsqueeze(1),
+                psi_coils=psi_coils.unsqueeze(1) if psi_coils is not None else None,
                 L=meta["L"],
                 Beta0=meta["Beta0"],
                 R0=meta["R_axis"],
@@ -221,6 +230,7 @@ class PlaNetLoss(nn.Module):
                 psi_axis=meta["psi_axis"],
                 psi_bndry=meta["psi_bndry"],
                 Ip_target=meta["Ip"],
+                predict_plasma=predict_plasma,
             )
             self.log_dict["ip_loss"] = ip_loss.item()
             total_loss += ip_loss
@@ -286,14 +296,18 @@ def axis_constraint_loss(
     psi_bndry: torch.Tensor,
     R_axis: torch.Tensor,
     Z_axis: torch.Tensor,
+    predict_plasma: bool = False,
 ) -> torch.Tensor:
     B, _, nr, nz = pred.shape
 
-    psi_plasma = pred - psi_coils
+    if predict_plasma:
+        pred_total = pred + psi_coils
+    else:
+        pred_total = pred
     dpsi = (psi_axis - psi_bndry).view(B, 1, 1, 1).clamp_min(1e-30)
-    psi_plasma_norm = (psi_plasma - psi_bndry.view(B, 1, 1, 1)) / dpsi
+    psi_norm = (pred_total - psi_bndry.view(B, 1, 1, 1)) / dpsi
 
-    pred_s = psi_plasma_norm.squeeze(1)
+    pred_s = psi_norm.squeeze(1)
 
     dR = (R[:, 1, 0] - R[:, 0, 0])
     dZ = (Z[:, 0, 1] - Z[:, 0, 0])
@@ -342,12 +356,16 @@ def ip_constraint_loss_freebnd(
     psi_axis: torch.Tensor,
     psi_bndry: torch.Tensor,
     Ip_target: torch.Tensor,
+    predict_plasma: bool = False,
 ) -> torch.Tensor:
     B = pred.shape[0]
     dR = (R[:, 1, 0] - R[:, 0, 0]).view(B)
     dZ = (Z[:, 0, 1] - Z[:, 0, 0]).view(B)
 
-    psi_plasma = pred - psi_coils
+    if predict_plasma:
+        psi_plasma = pred
+    else:
+        psi_plasma = pred - psi_coils
     dpsi = (psi_axis - psi_bndry).view(B, 1, 1, 1).clamp_min(1e-30)
     psiN = ((psi_plasma - psi_bndry.view(B, 1, 1, 1)) / dpsi).clamp(0.0, 1.0).squeeze(1)
 

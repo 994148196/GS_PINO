@@ -37,7 +37,7 @@ def _stack_metadata(meta_list: list[dict]) -> dict[str, torch.Tensor]:
 
 
 def _collate(batch):
-    measures, R, Z, psi_total, mask, psi_plasma, psi_coils, rhs, meta = zip(*batch)
+    measures, R, Z, psi_total, mask, psi_plasma, psi_coils, rhs, interior_mask, meta = zip(*batch)
     return (
         torch.stack(measures),
         torch.stack(R),
@@ -47,6 +47,7 @@ def _collate(batch):
         torch.stack(psi_plasma),
         torch.stack(psi_coils),
         torch.stack(rhs),
+        torch.stack(interior_mask),
         list(meta),
     )
 
@@ -65,6 +66,7 @@ def run_epoch(
     ip_scale: float = 1.0,
     curvature_scale: float = 1.0,
     model_type: str = "planet",
+    predict_plasma: bool = False,
 ) -> dict[str, float]:
     train = opt is not None
     model.train(train)
@@ -83,14 +85,18 @@ def run_epoch(
         opt.zero_grad()
 
     with torch.set_grad_enabled(train):
-        for step, (measures, R, Z, psi_total, mask, psi_plasma, psi_coils, rhs, meta_list) in enumerate(loader):
+        for step, (measures, R, Z, psi_total, mask, psi_plasma, psi_coils, rhs, interior_mask, meta_list) in enumerate(loader):
             measures = measures.to(device)
             R = R.to(device)
             Z = Z.to(device)
             psi_total = psi_total.to(device)
+            psi_plasma_target = psi_plasma.to(device)
             mask = mask.to(device)
             psi_coils = psi_coils.to(device)
             rhs = rhs.to(device)
+            interior_mask = interior_mask.to(device)
+
+            target = psi_plasma_target if predict_plasma else psi_total
 
             meta = _stack_metadata(meta_list)
             meta = {k: v.to(device) for k, v in meta.items()}
@@ -98,8 +104,8 @@ def run_epoch(
             L_ker, Df_ker = compute_grad_shafranov_kernels(R, Z)
 
             with ctx:
-                if model_type == "planet":
-                    pred = model((measures, R, Z))
+                if model_type in ("planet", "planet_attn"):
+                    pred = model((measures, R, Z, psi_coils))
                 else:
                     ufno_input = build_ufno_input(measures, R, Z, psi_coils)
                     pred = model(ufno_input).squeeze(1)
@@ -116,7 +122,7 @@ def run_epoch(
 
                 loss = loss_module(
                     pred=pred,
-                    target=psi_total,
+                    target=target,
                     rhs=rhs,
                     Laplace_kernel=L_ker,
                     Df_dr_kernel=Df_ker,
@@ -124,7 +130,9 @@ def run_epoch(
                     ZZ=Z,
                     psi_coils=psi_coils,
                     mask=mask,
+                    interior_mask=interior_mask,
                     meta=meta,
+                    predict_plasma=predict_plasma,
                 )
 
                 loss_module.scale_pde = original_scale_pde
@@ -158,8 +166,8 @@ def run_epoch(
             total_ip += float(loss_module.log_dict.get("ip_loss", 0)) * batch_size
             total_curvature += float(loss_module.log_dict.get("curvature_loss", 0)) * batch_size
             
-            target_max = psi_total.max(dim=1)[0].max(dim=1)[0]
-            target_min = psi_total.min(dim=1)[0].min(dim=1)[0]
+            target_max = target.max(dim=1)[0].max(dim=1)[0]
+            target_min = target.min(dim=1)[0].min(dim=1)[0]
             target_range = target_max - target_min
             target_range = target_range.clamp(min=1e-6).mean().item()
             normalized_error = float(loss_module.log_dict.get("mse_loss", 0)) ** 0.5 / target_range
@@ -186,7 +194,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=300, help="Number of training epochs.")
     parser.add_argument("--batch-size", type=int, default=4, help="Training batch size.")
     parser.add_argument("--lr", type=float, default=5e-4, help="AdamW learning rate.")
-    parser.add_argument("--model", type=str, default="planet", choices=["planet", "ufno"], help="Model architecture: planet (PlaNetCore) or ufno (U-FNO v2).")
+    parser.add_argument("--model", type=str, default="planet", choices=["planet", "planet_attn", "ufno"], help="Model architecture: planet (PlaNetCore), planet_attn (PlaNetCore + attention) or ufno (U-FNO v2).")
     parser.add_argument("--hidden-dim", type=int, default=256, help="Hidden dimension for PlaNetCore.")
     parser.add_argument("--width", type=int, default=128, help="Width dimension for U-FNO.")
     parser.add_argument("--layers", type=int, default=6, help="Number of layers for U-FNO.")
@@ -204,6 +212,12 @@ def main() -> None:
     parser.add_argument("--patience", type=int, default=80, help="Early stopping patience.")
     parser.add_argument("--min-epochs", type=int, default=150, help="Minimum training epochs before early stopping.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
+    parser.add_argument("--predict-plasma", action=argparse.BooleanOptionalAction, default=False, help="Predict psi_plasma instead of psi_total.")
+    parser.add_argument("--noise-std", type=float, default=0.0, help="Standard deviation of Gaussian noise added to coil currents during training.")
+    parser.add_argument("--weight-decay", type=float, default=1e-6, help="Weight decay (L2 regularization) for optimizer.")
+    parser.add_argument("--dropout", type=float, default=0.0, help="Dropout rate for PlaNetCore model.")
+    parser.add_argument("--fourier-freqs", type=int, default=0, help="Number of Fourier frequencies for positional encoding in TrunkNet.")
+    parser.add_argument("--use-coil-input", action="store_true", help="Use psi_coils as additional spatial input to PlaNetCore.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -227,7 +241,7 @@ def main() -> None:
     print(f"  Loss weights: mse={args.scale_mse}, pde={args.scale_pde}, axis={args.scale_axis}, ip={args.scale_ip}, curvature={args.scale_curvature}")
     print(f"{'='*60}\n")
 
-    train_ds = FreeBndDataset(args.data, train_idx)
+    train_ds = FreeBndDataset(args.data, train_idx, noise_std=args.noise_std)
     val_ds = FreeBndDataset(args.data, val_idx, train_ds.param_norm)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=_collate)
@@ -251,14 +265,16 @@ def main() -> None:
     print(f"  Input measures: {n_measures}, Grid size: {nr}x{nz}")
     
     if args.model == "planet":
-        model = PlaNetCore(n_measures=n_measures, hidden_dim=args.hidden_dim, nr=nr, nz=nz).to(device)
+        model = PlaNetCore(n_measures=n_measures, hidden_dim=args.hidden_dim, nr=nr, nz=nz, dropout=args.dropout, fourier_freqs=args.fourier_freqs, use_coil_input=args.use_coil_input).to(device)
+    elif args.model == "planet_attn":
+        model = PlaNetAttention(n_measures=n_measures, hidden_dim=args.hidden_dim, nr=nr, nz=nz, dropout=args.dropout, fourier_freqs=args.fourier_freqs, use_coil_input=args.use_coil_input).to(device)
     else:
         model = UFNO2d_v2(in_channels=12, modes1=args.modes1, modes2=args.modes2, width=args.width, layers=args.layers).to(device)
     
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Model parameters: {total_params:,}")
     
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-6)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs - args.warmup_epochs)
 
     loss_module = PlaNetLoss(
@@ -270,7 +286,7 @@ def main() -> None:
         scale_curvature=args.scale_curvature,
     )
 
-    print(f"  Optimizer: AdamW, lr={args.lr}, weight_decay=1e-6")
+    print(f"  Optimizer: AdamW, lr={args.lr}, weight_decay={args.weight_decay}")
     print(f"  Scheduler: CosineAnnealingLR (after {args.warmup_epochs} epochs warmup)")
     print(f"  Gradient accumulation: {args.accum_steps} steps (effective batch = {args.batch_size * args.accum_steps})")
     if args.clip_grad > 0:
@@ -286,9 +302,9 @@ def main() -> None:
 
     mse_only_epochs = 100
     pde_ramp_epochs = 150
-    axis_start_epoch = 80
-    ip_start_epoch = 100
-    curvature_start_epoch = 120
+    axis_start_epoch = 150
+    ip_start_epoch = 200
+    curvature_start_epoch = 250
 
     for epoch in pbar:
         if epoch < args.warmup_epochs:
@@ -315,13 +331,15 @@ def main() -> None:
             clip_grad=args.clip_grad, amp=args.amp, accum_steps=args.accum_steps,
             pde_scale=pde_scale, axis_scale=axis_scale, ip_scale=ip_scale,
             curvature_scale=curvature_scale,
-            model_type=args.model
+            model_type=args.model,
+            predict_plasma=args.predict_plasma
         )
         val_losses = run_epoch(
             model, val_loader, None, device, loss_module,
             pde_scale=pde_scale, axis_scale=axis_scale, ip_scale=ip_scale,
             curvature_scale=curvature_scale,
-            model_type=args.model
+            model_type=args.model,
+            predict_plasma=args.predict_plasma
         ) if len(val_ds) else train_losses
 
         if epoch >= args.warmup_epochs:
@@ -375,6 +393,7 @@ def main() -> None:
                     "nr": nr,
                     "nz": nz,
                     "test_indices": test_idx,
+                    "predict_plasma": args.predict_plasma,
                 },
                 output_dir / "best.pt",
             )

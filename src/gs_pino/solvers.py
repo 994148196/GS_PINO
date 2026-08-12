@@ -89,7 +89,9 @@ class GSSolverAdapter:
 
     Parameters
     ----------
-    nr, nz : 求解器网格的 R、Z 点数。
+    nr, nz : 目标输出网格的 R、Z 点数。
+             求解器会自动使用最近的 2^k+1 网格进行精确计算，
+             然后插值到目标大小。
     maxits : 最大 Picard 迭代次数。
     rtol   : 相对 psi 变化收敛容差。
     anderson_m : Anderson 加速窗口大小。
@@ -97,8 +99,8 @@ class GSSolverAdapter:
 
     def __init__(
         self,
-        nr: int = 65,
-        nz: int = 65,
+        nr: int = 64,
+        nz: int = 64,
         maxits: int = 50,
         rtol: float = 5e-3,
         anderson_m: int = 5,
@@ -115,6 +117,13 @@ class GSSolverAdapter:
         self.anderson_m = anderson_m
         self._setup_grid = False
         bk.set_backend("cpu")
+
+    def _to_romberg_size(self, n: int) -> int:
+        """将网格大小转换为最近的 2^k + 1 格式，用于 Romberg 积分。"""
+        if (n - 1) & (n - 2) == 0:
+            return n
+        k = int(np.ceil(np.log2(n - 1)))
+        return 2**k + 1
 
     def solve(self, params: dict[str, float]) -> dict[str, np.ndarray | float] | None:
         """求解一个固定边界 GS 平衡并返回所有需要的场。
@@ -141,7 +150,6 @@ class GSSolverAdapter:
         alpha_m = float(params["alpha_m"])
         alpha_n = float(params["alpha_n"])
 
-        # 适配域：1.3 倍等离子体尺寸，最小边距 0.15 m
         margin = max(0.15, 0.3 * a)
         Rmin = R0 - a - margin
         Rmax = R0 + a + margin
@@ -149,11 +157,14 @@ class GSSolverAdapter:
         Zmin = -Zmax_val
         Zmax_val_ = Zmax_val
 
+        nr_solve = self._to_romberg_size(self.nr)
+        nz_solve = self._to_romberg_size(self.nz)
+
         try:
             eq = FixedBoundaryEquilibrium(
                 R0=R0, a=a, kappa=kappa, delta=delta,
                 Rmin=Rmin, Rmax=Rmax, Zmin=Zmin, Zmax=Zmax_val_,
-                nx=self.nr, ny=self.nz, order=2, method="lu",
+                nx=nr_solve, ny=nz_solve, order=2, method="lu",
                 fix_bndry_zero=True,
             )
 
@@ -171,38 +182,67 @@ class GSSolverAdapter:
                     convergenceInfo=True, verbose=False,
                 )
 
-            # --- 提取物理 psi 并归一化 ---
-            # fix_bndry_zero=True 使得 eq.psi() 中 LCFS 上 psi = 0
             psi_native = np.asarray(eq.psi(), dtype=np.float32)
-            psi_bndry = float(eq.psi_bndry)       # 0.0 with fix_bndry_zero
-            psi_axis_val = float(eq.psi_axis)     # 已平移：原始 psi_axis - 原始 psi_bndry
+            psi_bndry = float(eq.psi_bndry)
+            psi_axis_val = float(eq.psi_axis)
             dpsi = psi_axis_val - psi_bndry
 
-            if abs(dpsi) < 1e-30:
+            if abs(dpsi) < 1e-10:
                 return None
 
-            # psi_bar: LCFS = 0, axis = 1
             psi_bar = (psi_native - psi_bndry) / dpsi
             psi_bar = np.clip(psi_bar, 0.0, None).astype(np.float32)
 
-            # 磁轴位置
             R_axis, Z_axis, _ = eq.magneticAxis()
-
-            # 等离子体 LCFS 内部掩码
             plasma_mask = eq.plasma_mask.astype(np.float32)
 
-            # 轮廓参数：用于 GS 残差中的 p' 和 FF'
-            # p'(ψN) = L·Beta0/Raxis · (1-ψN^αm)^αn
-            # FF'(ψN) = μ₀·L·(1-Beta0)·Raxis · (1-ψN^αm)^αn
             profile_params = np.array([float(pro.L), float(pro.Beta0)], dtype=np.float32)
 
+            psi_bar = np.clip(psi_bar, 0.0, 1.0).astype(np.float32)
+
+            if nr_solve != self.nr or nz_solve != self.nz:
+                from scipy.interpolate import RectBivariateSpline
+
+                R_src = eq.R[:, 0]
+                Z_src = eq.Z[0, :]
+
+                R_dst = np.linspace(Rmin, Rmax, self.nr)
+                Z_dst = np.linspace(Zmin, Zmax_val_, self.nz)
+                R_dst_mesh, Z_dst_mesh = np.meshgrid(R_dst, Z_dst, indexing="ij")
+
+                spline_psi = RectBivariateSpline(R_src, Z_src, psi_native)
+                psi_native = spline_psi(R_dst, Z_dst).astype(np.float32)
+
+                spline_bar = RectBivariateSpline(R_src, Z_src, psi_bar)
+                psi_bar = spline_bar(R_dst, Z_dst).astype(np.float32)
+
+                spline_mask = RectBivariateSpline(R_src, Z_src, plasma_mask)
+                plasma_mask = (spline_mask(R_dst, Z_dst) > 0.5).astype(np.float32)
+
+                R = R_dst_mesh.astype(np.float32)
+                Z = Z_dst_mesh.astype(np.float32)
+
+                psi_bar = np.clip(psi_bar, 0.0, 1.0).astype(np.float32)
+            else:
+                R = np.asarray(eq.R, dtype=np.float32)
+                Z = np.asarray(eq.Z, dtype=np.float32)
+
+            if psi_bar.min() < -0.01 or psi_bar.max() > 1.01:
+                return None
+
+            if abs(psi_axis_val) > 1e5:
+                return None
+
+            if abs(pro.L) > 1e8 or abs(pro.Beta0) > 1e3:
+                return None
+
             return {
-                "R": np.asarray(eq.R, dtype=np.float32),
-                "Z": np.asarray(eq.Z, dtype=np.float32),
+                "R": R,
+                "Z": Z,
                 "psi_bar": psi_bar,
-                "psi": psi_native,              # 已平移：LCFS = 0
-                "psi_lcfs": psi_bndry,           # 0.0
-                "psi_axis": psi_axis_val,        # 已平移
+                "psi": psi_native,
+                "psi_lcfs": psi_bndry,
+                "psi_axis": psi_axis_val,
                 "R_axis": float(R_axis),
                 "Z_axis": float(Z_axis),
                 "plasma_mask": plasma_mask,

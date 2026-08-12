@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .data_freegs import build_input, Normalization
-from .models import UFNO2d
+from .data_freegs import Normalization, build_ufno_input
+from .models import PlaNetCore, UFNO2d_v2
 
 
 def compute_greens(tokamak, R, Z):
@@ -56,54 +56,69 @@ def compute_psi_coils(coil_currents: np.ndarray, greens: np.ndarray) -> np.ndarr
 
 
 def predict_psi(
-    model: UFNO2d,
+    model: torch.nn.Module,
+    model_type: str,
     R: np.ndarray,
     Z: np.ndarray,
     coil_currents: np.ndarray,
     params: np.ndarray,
     param_norm: Normalization,
     greens: np.ndarray,
+    predict_plasma: bool,
     device: torch.device = torch.device("cpu"),
 ) -> dict[str, np.ndarray]:
     """Predict psi_total from coil currents and plasma parameters.
-    
+
     Args:
-        model: Trained UFNO2d model
+        model: Trained model (PlaNetCore or UFNO2d_v2)
+        model_type: "planet" or "ufno"
         R: 2D array of major radius coordinates [nx, ny]
         Z: 2D array of height coordinates [nx, ny]
         coil_currents: [4] array of coil currents
         params: [5] array of plasma parameters [Ip, paxis, alpha_m, alpha_n, fvac]
         param_norm: Normalization object for parameters
         greens: [4, nx, ny] array of Green functions
+        predict_plasma: whether the model predicts psi_plasma directly
         device: torch device
-        
+
     Returns:
         Dictionary with:
             - psi_plasma: Predicted plasma contribution
             - psi_coils: Vacuum contribution
             - psi_total: Total flux (psi_plasma + psi_coils)
     """
-    sample = {
-        "R": R,
-        "Z": Z,
-        "coil_currents": coil_currents,
-        "params": params,
-    }
-    
-    x = build_input(sample, param_norm.mean, param_norm.std)
-    x_tensor = torch.from_numpy(x).unsqueeze(0).to(device)
-    
+    # measures 顺序与 FreeBndDataset 一致：[coil0..3, Ip, paxis, alpha_m, alpha_n, fvac]
+    measures = np.concatenate([coil_currents, params], axis=0)
+    measures = param_norm.apply(measures).astype(np.float32)
+
+    # 训练数据为 float32（FreeBndDataset），模型权重也是 float32；
+    # 输入必须显式转 float32，否则 double 输入会触发 conv 类型不匹配
+    R_t = torch.from_numpy(np.asarray(R, dtype=np.float32)).unsqueeze(0).to(device)  # [1, nx, ny]
+    Z_t = torch.from_numpy(np.asarray(Z, dtype=np.float32)).unsqueeze(0).to(device)
+    m_t = torch.from_numpy(measures).unsqueeze(0).to(device)  # [1, 9]
+    psi_coils_np = compute_psi_coils(coil_currents, greens).astype(np.float32)
+    coils_t = torch.from_numpy(psi_coils_np).unsqueeze(0).to(device)  # [1, nx, ny]
+
     model.eval()
     with torch.no_grad():
-        pred_plasma = model(x_tensor)
-    
-    psi_plasma = pred_plasma.squeeze().cpu().numpy()
-    psi_coils = compute_psi_coils(coil_currents, greens)
-    psi_total = psi_plasma + psi_coils
-    
+        if model_type == "planet":
+            pred = model((m_t, R_t, Z_t, coils_t))
+        else:
+            ufno_input = build_ufno_input(m_t, R_t, Z_t, coils_t)
+            pred = model(ufno_input)
+
+    pred_np = pred.squeeze().cpu().numpy()
+
+    if predict_plasma:
+        psi_plasma = pred_np
+        psi_total = psi_plasma + psi_coils_np
+    else:
+        psi_total = pred_np
+        psi_plasma = psi_total - psi_coils_np
+
     return {
         "psi_plasma": psi_plasma,
-        "psi_coils": psi_coils,
+        "psi_coils": psi_coils_np,
         "psi_total": psi_total,
     }
 
@@ -140,13 +155,36 @@ def main() -> None:
     print(f"Computed Green functions for coils: {coil_names}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UFNO2d(11, params_config["modes1"], params_config["modes2"], params_config["width"], params_config["layers"]).to(device)
+
+    model_type = params_config.get("model", "planet")
+    n_measures = checkpoint.get("n_measures", 9)
+    nr = checkpoint.get("nr", args.nx)
+    nz = checkpoint.get("nz", args.ny)
+    predict_plasma = checkpoint.get("predict_plasma", False)
+
+    if model_type == "planet":
+        model = PlaNetCore(
+            n_measures=n_measures, hidden_dim=params_config.get("hidden_dim", 256),
+            nr=nr, nz=nz,
+            dropout=params_config.get("dropout", 0.0),
+            fourier_freqs=params_config.get("fourier_freqs", 0),
+            use_coil_input=params_config.get("use_coil_input", False),
+        ).to(device)
+    else:
+        model = UFNO2d_v2(
+            in_channels=12,
+            modes1=params_config.get("modes1", 32),
+            modes2=params_config.get("modes2", 32),
+            width=params_config.get("width", 128),
+            layers=params_config.get("layers", 6),
+        ).to(device)
     model.load_state_dict(checkpoint["model"])
 
     coil_currents = np.array(args.coil_currents, dtype=np.float32)
     plasma_params = np.array(args.params, dtype=np.float32)
 
-    print("\nInput parameters:")
+    print(f"\nModel: {model_type} (predict_plasma={predict_plasma})")
+    print("Input parameters:")
     print(f"  Coil currents: {coil_currents}")
     print(f"  Ip: {plasma_params[0]} A")
     print(f"  paxis: {plasma_params[1]} Pa")
@@ -154,7 +192,7 @@ def main() -> None:
     print(f"  alpha_n: {plasma_params[3]}")
     print(f"  fvac: {plasma_params[4]}")
 
-    result = predict_psi(model, R_grid, Z_grid, coil_currents, plasma_params, param_norm, greens, device)
+    result = predict_psi(model, model_type, R_grid, Z_grid, coil_currents, plasma_params, param_norm, greens, predict_plasma, device)
 
     print("\nPrediction stats:")
     print(f"  psi_plasma: min={result['psi_plasma'].min():.4f}, max={result['psi_plasma'].max():.4f}, mean={result['psi_plasma'].mean():.4f}")

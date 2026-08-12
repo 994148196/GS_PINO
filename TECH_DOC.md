@@ -18,15 +18,27 @@ GS_PINO 是一个基于**神经网络算子**的固定边界 Grad-Shafranov（GS
 
 ```
 src/gs_pino/
-├── __init__.py           # 包初始化
-├── geometry.py           # LCFS 几何工具：Miller 参数化、掩码、SDF
-├── solvers.py            # GS 求解器适配器：解析备用 + gspack2_TRAE 封装
-├── generate_dataset.py   # 数据集生成 CLI：采样参数、调用求解器、保存 .npz
-├── data.py               # 数据集类 GSDataset：加载、归一化、输入通道构建
-├── models.py             # U-FNO 模型定义：SpectralConv2d, UFNOBlock, UFNO2d
-├── losses.py             # 损失函数：masked MSE, GS 残差, Ip/betap 约束
-├── train.py              # 训练 CLI：训练循环、验证、checkpoint 保存
-└── evaluate.py           # 评估 CLI：指标计算、可视化对比图
+├── __init__.py               # 包初始化
+├── geometry.py               # LCFS 几何工具：Miller 参数化、掩码、SDF
+├── solvers.py                # 固定边界 GS 求解器适配器：gspack2_TRAE 封装 + 解析备用
+├── generate_dataset.py       # 固定边界数据集生成 CLI
+├── data.py                   # 固定边界数据集类 GSDataset
+├── models.py                 # 模型定义：UFNO2d/UFNO2d_v2、PlaNetCore、PlaNetAttention 等
+├── losses.py                 # 固定边界损失函数（masked MSE, GS 残差, axis, Ip/betap 约束）
+├── train.py                  # 固定边界训练 CLI
+├── evaluate.py               # 固定边界评估 CLI
+│
+├── generate_freegs_dataset.py # 自由边界数据集生成 CLI（freegs）
+├── data_freegs.py            # 自由边界数据集类 FreeBndDataset + U-FNO 输入构建
+├── losses_freegs.py          # 自由边界损失函数（GSOperatorLoss, curvature, axis, ip）
+├── train_freegs.py           # 自由边界训练 CLI（--model planet/ufno）
+├── evaluate_freegs.py        # 自由边界评估 CLI
+├── visualize_freegs.py       # 自由边界可视化 CLI
+│
+├── inference_freegs.py       # 自由边界推理 CLI（见 14.2）
+├── merge_datasets.py         # 数据集合并工具
+├── visualize_results.py      # 结果可视化（见 14.3）
+└── verification/             # Solov'ev 解析解与 gspack 求解器验证脚本（第 13 章）
 ```
 
 ---
@@ -84,16 +96,25 @@ ranges = {
 ```
 物理参数 (dict)
   ↓
-FixedBoundaryEquilibrium(R0, a, kappa, delta, fix_bndry_zero=True, nx=nr, ny=nz)
-  ↓  + ConstrainBetapIp(betap, Ip, alpha_m, alpha_n, Raxis=R0)
+FixedBoundaryEquilibrium(R0, a, kappa, delta, fix_bndry_zero=True, nx=nr_solve, ny=nz_solve)
+  ↓  + ConstrainBetapIp(betap, Ip, alpha_m, alpha_n, Raxis=R0, fvac=1.0)
   ↓
-picard.solve(eq, pro, maxits=50, rtol=1e-5, anderson_m=5)
+picard.solve(eq, pro, maxits=50, rtol=rtol, anderson_m=5)
   ↓
 返回: {R, Z, psi, psi_bar, psi_lcfs=0, psi_axis, R_axis, Z_axis,
         plasma_mask, profile_params=[L, Beta0]}
 ```
 
 **`fix_bndry_zero=True`** 使求解器直接返回 LCFS 处 psi=0 的结果，省去后续平移步骤，同时求解速度提升约 1.6 倍。
+
+**求解网格与插值**：求解器在最近的 `2^k + 1`（Romberg）网格上迭代（`nx=nr_solve, ny=nz_solve`），收敛后用 `RectBivariateSpline` 双三次样条插值回目标网格 `(nr, nz)`。因此任意目标网格（如 64×64）均可直接使用，129×129 恰好是 `2^7+1` 时无需插值。
+
+**求解失败过滤**：求解结果若满足以下任一条件则视为失败并返回 `None`，数据集生成时跳过该样本：
+- `psi_bar` 越界（< -0.01 或 > 1.01）
+- `|psi_axis| > 1e5`
+- `|L| > 1e8` 或 `|Beta0| > 1e3`
+
+**收敛容差**：`GSSolverAdapter` 内部默认 `rtol=5e-3`；`generate_dataset` 的 `--rtol`（默认 1e-5）会覆盖该值。
 
 ### 3.3 几何通道 (`geometry.py`)
 
@@ -179,8 +200,8 @@ Input:  [B, C_in, H, W]
 ```
 
 **关键参数**：
-- `modes1`：R 方向保留的傅里叶模态数（默认 32）
-- `modes2`：Z 方向保留的傅里叶模态数（默认 32）
+- `modes1`：R 方向保留的傅里叶模态数（`UFNO2d` 类默认 16，`UFNO2d_v2` 默认 32）
+- `modes2`：Z 方向保留的傅里叶模态数（同上）
 - 模态数会自动裁剪为不超过网格尺寸的一半
 
 #### 4.3.2 UNetBranch (局部修正分支)
@@ -233,6 +254,23 @@ UFNOBlock 1                 [16, 64, 129, 129]
 UFNOBlock 2-4 (同结构)      [16, 64, 129, 129]
 proj (Conv2d 1×1→128→1)    [16, 1, 129, 129]
 ```
+
+### 4.5 U-FNO v2（`UFNO2d_v2`）
+
+在 v1 基础上改进的增强版本，主要差异：
+
+```
+UFNOBlock_v2:
+  residual = x
+  x = GroupNorm(4, width)(x)                    # 归一化
+  x = GELU(SpectralConv2d(x) + PointwiseConv2d(x) + UNetBranch(x))
+  return x + residual                           # 残差连接
+```
+
+- **GroupNorm**：替代无归一化，训练更稳定
+- **残差连接**：缓解深层网络梯度消失
+- **默认超参数更大**：`width=128, layers=6, modes1=modes2=32`（v1 为 32/4/16），proj 中间层 256
+- 该变体主要服务于自由边界管线（`train_freegs --model ufno`，12 通道输入），也可用于固定边界任务
 
 ---
 
@@ -306,14 +344,28 @@ Br = -(1/R)·∂ψ/∂Z
 Bz =  (1/R)·∂ψ/∂R
 ```
 
-### 5.6 总损失
+### 5.6 磁轴约束损失: `axis_constraint_loss`
+
+在真实磁轴位置（由元数据中的 `R_axis, Z_axis` 双线性插值定位）惩罚预测值偏离 1，强制归一化磁通在磁轴处为 1（psi_bar 在磁轴处的目标值）：
+
+```python
+# 在 (R_axis, Z_axis) 处双线性插值预测场
+i_frac = (R_axis - R[:, 0, 0]) / dR
+j_frac = (Z_axis - Z[:, 0, 0]) / dZ
+axis_pred = 双线性插值(pred, i_frac, j_frac)
+loss_axis = (axis_pred.clamp(-5, 5) - 1.0)²  # 均值
+```
+
+### 5.7 总损失
 
 ```python
 loss = loss_data + bc_weight * loss_bc + pde_weight * loss_pde
-     + ip_weight * loss_ip + betap_weight * loss_betap
+     + ip_weight * loss_ip + axis_weight * loss_axis
 ```
 
-默认权重：`bc=0.05, pde=0.01, ip=0.0, betap=0.0`
+默认权重（train.py CLI）：`bc=0.05, pde=0.01, ip=0.0, axis=0.01`
+
+> 注：`betap_constraint_loss`（5.5 节）定义在 `losses.py` 中但**未接入任何训练脚本**，没有对应 CLI 参数；5.4 节的 `ip_constraint_loss` 同样默认关闭（`--ip-weight 0.0`）。
 
 ---
 
@@ -323,10 +375,12 @@ loss = loss_data + bc_weight * loss_bc + pde_weight * loss_pde
 
 ```
 总样本 n
-  ├── 训练集: n * 0.70  (随机排列后取前 70%)
+  ├── 测试集: n * 0.15  (随机排列后取最前 15%)
   ├── 验证集: n * 0.15  (中间 15%)
-  └── 测试集: n * 0.15  (最后 15%)
+  └── 训练集: n * 0.70  (最后 70%)
 ```
+
+> 注意：测试集取排列**最前** 15%，训练集取**最后** 70%（`data.py::split_indices`）。
 
 ### 6.2 每 epoch 步骤
 
@@ -340,13 +394,16 @@ for x, y, mask, sdf, params, meta_list in loader:
     loss_bc   = bc_weight * boundary_band_loss(pred, sdf)
     loss_pde  = pde_weight * gs_residual_loss(pred, ..., meta)
     loss_ip   = ip_weight * ip_constraint_loss(pred, ..., meta)
+    loss_axis = axis_weight * axis_constraint_loss(pred, ..., meta)
     
-    loss = loss_data + loss_bc + loss_pde + loss_ip
+    loss = loss_data + loss_bc + loss_pde + loss_ip + loss_axis
     
     if training:
         loss.backward()
         optimizer.step()
 ```
+
+损失在梯度累积（`--accum-steps`）下按 `loss / accum_steps` 反传，每 `accum_steps` 个 batch 执行一次 `optimizer.step()`；启用 `--amp` 时使用混合精度（`GradScaler`）。
 
 ### 6.3 Checkpoint 保存
 
@@ -365,8 +422,9 @@ torch.save({
 ### 6.4 训练监控
 
 每个 epoch 记录到 `history.json`：
-- `train_data, train_bc, train_pde, train_ip, train_total`
-- `val_data, val_bc, val_pde, val_ip, val_total`
+- `train_data, train_bc, train_pde, train_ip, train_axis, train_total`
+- `val_data, val_bc, val_pde, val_ip, val_axis, val_total`
+- `epoch, lr`
 
 自动生成 `training_curves.png` 展示各损失变化曲线。
 
@@ -382,7 +440,8 @@ torch.save({
   "relative_l2_mean": 0.023,       // 平均相对 L2 误差
   "relative_l2_median": 0.016,     // 中位数
   "relative_l2_p95": 0.065,        // 95 分位数
-  "relative_l2_max": 0.19          // 最大值
+  "relative_l2_max": 0.19,         // 最大值
+  "n_cases": 120                   // 测试样本数
 }
 ```
 
@@ -396,6 +455,8 @@ torch.save({
 整体统计图：
 - `summary_error_histogram.png` — 误差分布直方图
 - `summary_error_vs_parameters.png` — 误差与各输入参数的关系散点图
+
+最优/最差样本：额外将相对 L2 误差最小的 3 个与最大的 3 个样本分别保存到 `best_cases/` 与 `worst_cases/` 目录。
 
 ---
 
@@ -411,6 +472,7 @@ torch.save({
 | `--nz` | 64 | Z 网格数 |
 | `--seed` | 42 | 随机种子 |
 | `--rtol` | 1e-5 | 求解器收敛容差 |
+| `--n-jobs` | -1 | joblib 并行生成线程数（-1 = 全部核心） |
 
 ### 8.2 train
 
@@ -428,7 +490,13 @@ torch.save({
 | `--pde-weight` | 0.01 | PDE 残差损失权重 |
 | `--bc-weight` | 0.05 | 边界损失权重 |
 | `--ip-weight` | 0.0 | Ip 约束损失权重 |
+| `--axis-weight` | 0.01 | 磁轴约束损失权重 |
 | `--clip-grad` | 1.0 | 梯度裁剪阈值 (0=禁用) |
+| `--accum-steps` | 2 | 梯度累积步数（有效 batch = batch-size × accum-steps） |
+| `--amp` | False | 混合精度训练 |
+| `--warmup-epochs` | 5 | 学习率线性预热轮数 |
+| `--patience` | 30 | 早停耐心值（0=禁用） |
+| `--min-epochs` | 50 | 早停前最小训练轮数 |
 | `--seed` | 0 | 随机种子 |
 
 ### 8.3 evaluate
@@ -444,6 +512,8 @@ torch.save({
 ---
 
 ## 9. 运行示例
+
+> 模块调用方式：项目为 src 布局（`pyproject.toml`），`python -m gs_pino.*` 需要先 `pip install -e .` 或设置 `PYTHONPATH=src`。仓库内的 `scripts/run_smoke.sh`、`scripts/run_practical.sh` 使用 `export PYTHONPATH=...:src` 方式（见 14.5 节）。
 
 ### 9.1 端到端流程
 
@@ -548,6 +618,21 @@ python -m gs_pino.evaluate --data data/gs_smoke.npz \
 - 早停机制可在模型收敛后自动终止，节省计算资源
 - 当验证损失在后期出现波动时，早停可防止过拟合
 
+#### 版本 4.1 — 磁轴约束 + 增强求解器 (2026)
+
+在 V4 基础上引入三项改进（工作区未提交版本，对应 `data/gs_fixed_boundary_v41*.npz` 系列数据集）：
+
+1. **磁轴约束损失**（`--axis-weight 0.01`，默认启用）：在真实磁轴位置约束 `psi_bar = 1`
+2. **求解器增强**：Romberg 网格求解 + 样条插值（任意目标网格）、求解失败样本自动过滤
+3. **评估增强**：`n_cases` 指标 + best/worst cases 可视化
+
+| 运行 | 数据集 | masked MSE | rel L2 均值 | rel L2 中位数 | rel L2 P95 | rel L2 最大 | 测试样本数 |
+|------|--------|-----------|-------------|---------------|------------|-------------|------------|
+| `large_v4.1` | `gs_fixed_boundary_v41.npz` (~500) | 0.00236 | 6.17% | 1.85% | 8.45% | 153% | 75 |
+| `v41_fixed` | `gs_fixed_boundary_v41_clean.npz` (~800) | 0.00071 | 3.14% | 1.92% | 7.19% | 78.0% | 120 |
+
+> 注：P95 与 max 之间差距较大，说明存在少量困难样本（参数域边界附近），与 V1-V4 的现象一致。
+
 #### 运行命令
 
 ```bash
@@ -575,15 +660,20 @@ python -m gs_pino.train --data data/gs_large2k.npz --lr 5e-4 --clip-grad 1.0 \
 
 ---
 
-## 11. 自由边界条件扩展
+## 11. 自由边界条件扩展（freegs 管线）
 
 ### 11.1 项目概述
 
-自由边界条件扩展使用 **freegs** 库生成数据集，构建从 PF 线圈电流和等离子体参数到总极向磁通 `psi_total` 的 PINO 模型。
+自由边界条件扩展使用 **freegs** 库生成数据集，构建从 PF 线圈电流和等离子体参数到极向磁通的 PINO 模型。当前支持两种模型架构（`train_freegs --model`）：
 
-**核心区别**：
+- `planet` — PlaNetCore（Trunk-Branch-Decoder，默认）
+- `ufno` — U-FNO v2（12 通道输入，GroupNorm + 残差连接）
+
+最新实验结果（v9，1500 样本）中 PlaNetCore 为最优模型（等离子体区域 rel L2 均值 9.57%），详见第 12 章。
+
+**核心区别**（相对固定边界管线）：
 - **输入无掩码**：网络必须自己学习等离子体-真空界面
-- **输出全区域**：预测整个计算域的 `psi_total`，而非仅等离子体区域
+- **输出全区域**：预测整个计算域的 `psi_total`（或 `psi_plasma`），而非仅等离子体区域
 
 ### 11.2 自由边界 GS 方程
 
@@ -592,35 +682,43 @@ python -m gs_pino.train --data data/gs_large2k.npz --lr 5e-4 --clip-grad 1.0 \
 ψ_total = ψ_plasma + ψ_coils
 ψ_coils = Σ(I_k · G_k(R,Z))
 ```
-
-其中 `ψ_coils` 可从线圈电流和格林函数解析计算。
+其中 `ψ_coils` 由线圈电流与格林函数解析计算（freegs `compute_psi_coils`）。
 
 ### 11.3 文件结构
 
 ```
 src/gs_pino/
 ├── generate_freegs_dataset.py  # 数据集生成（使用 freegs）
-├── data_freegs.py              # 数据加载器
-├── losses_freegs.py            # 损失函数
-├── train_freegs.py             # 训练脚本
-├── evaluate_freegs.py          # 测试验证脚本
-└── visualize_freegs.py         # 可视化脚本
+├── data_freegs.py              # 数据集类 FreeBndDataset + build_ufno_input
+├── losses_freegs.py            # 损失函数（GSOperatorLoss、curvature、axis、ip）
+├── train_freegs.py             # 训练 CLI（--model planet/ufno）
+├── evaluate_freegs.py          # 评估 CLI
+├── visualize_freegs.py         # 可视化 CLI
+├── inference_freegs.py         # 推理 CLI（见 14.2）
+├── merge_datasets.py           # 数据集合并工具（见 14.1）
+└── visualize_results.py        # 结果可视化（见 14.3）
 ```
 
-### 11.4 输入通道设计
+### 11.4 输入通道设计（U-FNO v2）
 
-总通道数：**11（无等离子体掩码）**
+总通道数：**12**（`build_ufno_input`）
 
 | 通道 | 描述 | 维度 |
 |------|------|------|
-| R_norm | (R - R0) / a，R0=1.0, a=0.5 | [1, nx, ny] |
-| Z_norm | Z / a | [1, nx, ny] |
-| G_0 ... G_3 | 4个控制线圈的格林函数 | [4, nx, ny] |
+| R_norm | R / 2.0 | [1, nx, ny] |
+| Z_norm | Z / 2.0 | [1, nx, ny] |
 | Ip_norm | 归一化等离子体电流 | [1, nx, ny] |
 | paxis_norm | 归一化轴压强 | [1, nx, ny] |
 | alpha_m_norm | 归一化形状参数 | [1, nx, ny] |
 | alpha_n_norm | 归一化形状参数 | [1, nx, ny] |
 | fvac_norm | 归一化真空 f 值 | [1, nx, ny] |
+| coil0_norm ... coil3_norm | 4 个 PF 线圈电流（归一化） | [4, nx, ny] |
+| psi_coils | 线圈真空通量场（逐点变化） | [1, nx, ny] |
+
+说明：
+- 9 维标量 measures = `[coil0..coil3, Ip, paxis, alpha_m, alpha_n, fvac]`，经训练集均值/标准差归一化后广播到全网格
+- ✅ 曾存在通道取值偏移 bug（`measures[:, 0:5]` 被当作等离子体参数、`measures[:, 5:9]` 被当作线圈电流，与通道名错位 4 位），已修复为按上述顺序严格取数；`data_freegs.py` 中 `build_ufno_input` 带 docstring 注明 measures 顺序约定
+- PlaNetCore 不使用该通道构建，其输入为 `(x_meas, R, Z, psi_coils)` 四元组（见 12.2）
 
 ### 11.5 参数采样范围
 
@@ -631,459 +729,303 @@ src/gs_pino/
 | alpha_m | 1.0 - 2.0 |
 | alpha_n | 1.5 - 2.5 |
 | fvac | 1.8 - 2.2 |
+| X-points | 随机采样目标 X 点位置（freegs 约束求解用） |
+| PF 线圈电流 | **不采样**，由 freegs `control.constrain(xpoints)` 根据目标 X 点自动解出 |
 
-### 11.6 损失函数组合
+数据集默认在 65×65 网格求解（freegs 要求 2ⁿ+1），`FreeBndDataset` 预加载时自动插值到 64×64（FFT/AMP 要求 2ⁿ）。生成器还包含求解重试逻辑与有效性校验（`psi_total ≈ psi_plasma + psi_coils`，rtol 1e-3）。
 
-| 损失类型 | 权重 | 作用域 | 描述 |
+### 11.6 损失函数组合（PlaNetLoss）
+
+| 损失类型 | 权重（CLI 默认） | 作用域 | 描述 |
 |---------|------|--------|------|
-| global_mse | 1.0 | 整个计算域 | 数据拟合损失 |
-| gs_residual_loss_freebnd | 0.1 | 等离子体区域 | GS 方程残差约束 |
-| axis_constraint_loss | 0.1 | 磁轴位置 | ψ_plasma_norm = 1 的约束 |
-| ip_constraint_loss_freebnd | 0.01 | 等离子体区域 | 等离子体电流积分约束 |
+| mse（interior_mask 加权） | 1.0 | 计算域内部（边缘 10% 缓冲平滑过渡） | 数据拟合损失 |
+| pde（GSOperatorLoss） | 0.01 | 内部格点 | 卷积算子计算 Δ*ψ 与预计算 rhs 的 MSE |
+| curvature | 0.5 | 内部格点 | 预测场拉普拉斯平方均值（平滑约束） |
+| axis_constraint_loss | 0.01 | 磁轴位置 | ψ_norm = 1 约束（双线性插值） |
+| ip_constraint_loss_freebnd | 0.001 | 等离子体区域 | 等离子体电流积分约束 |
 
-### 11.7 训练超参数
+**GSOperatorLoss 说明**：PDE 损失不使用解析形式的 `gs_residual_loss_freebnd`（该函数保留在 losses_freegs.py 但未接入训练），而是用 3×3 卷积核（Laplace 核 + Df/dR 核）对预测场计算 Grad-Shafranov 算子 `Δ*ψ`，与数据集预计算的 `rhs` 场做 MSE，并可选 5×5 高斯核平滑（Gauss_kernel_5x5）。
 
-| 参数 | 值 |
-|------|-----|
-| epochs | 200 |
-| batch_size | 8 |
+**curvature_loss**（新增）：二阶导平滑约束，`mean(Δψ²)`，抑制预测场高频振荡。
+
+### 11.7 训练超参数（train_freegs 默认值）
+
+| 参数 | 默认值 |
+|------|--------|
+| epochs | 300 |
+| batch_size | 4（有效 batch = 4 × accum_steps=2 = 8） |
 | lr | 5e-4 |
-| width | 64 |
-| modes1/modes2 | 16 |
-| layers | 4 |
+| width / layers / modes1 / modes2 | 128 / 6 / 32 / 32（U-FNO） |
+| hidden_dim | 256（PlaNetCore） |
+| scale_mse / pde / axis / ip / curvature | 1.0 / 0.01 / 0.01 / 0.001 / 0.5 |
 | warmup_epochs | 10 |
-| patience | 50 |
-| min_epochs | 100 |
+| patience / min_epochs | 80 / 150 |
 | clip_grad | 1.0 |
+| amp | True（U-FNO 模式强制关闭：复数 FFT 不支持混合精度） |
+| accum_steps | 2 |
+| weight_decay | 1e-6（AdamW） |
+| 其他可选 | `--dropout`、`--fourier-freqs`（TrunkNet 傅里叶编码）、`--use-coil-input`（CoilEncoder）、`--noise-std`（线圈电流噪声注入）、`--predict-plasma` |
 
-### 11.8 评估指标
+### 11.8 评估指标（evaluate_freegs）
 
-- **Global MSE**（整个计算域）
-- **Plasma MSE**（等离子体区域）
-- **Relative L2 Error**（mean/median/P95/max）— 全局和等离子体区域
-- **PDE Residual**（GS 方程残差）
-- **Axis Error**（磁轴约束误差）
-- **Ip Error**（电流积分约束误差）
+- **Global MSE / Plasma MSE**（psi_total；`--predict-plasma` 模式额外报告 psi_plasma 与合成 psi_total 两套）
+- **Relative L2 Error**（mean/median/P95/max）— 全局与等离子体区域
+- 输出：`test_metrics.json`（checkpoint 同目录）+ `test_predictions.pt`（键：preds / preds_total / targets_plasma / targets_total / masks / interior_masks / indices）
 
 ### 11.9 完整工作流程
 
 ```bash
-# 1. 生成数据集（500-1000样本）
-python -m gs_pino.generate_freegs_dataset --n-samples 500 --out data/gs_free_boundary.npz
+# 1. 生成数据集（默认 64 样本；实际实验为 500×3 合并，见 12.3）
+python -m gs_pino.generate_freegs_dataset --n-samples 500 --out data/freegs_rhs_500.npz
 
-# 2. 训练模型
-python -m gs_pino.train_freegs --data data/gs_free_boundary.npz --output-dir outputs/freegs_run
+# 2. 合并多数据集（可选）
+python -m gs_pino.merge_datasets --inputs data/freegs_rhs_500.npz \
+    data/freegs_seed100.npz data/freegs_seed200.npz \
+    --output data/freegs_merged_1500.npz
 
-# 3. 测试验证
-python -m gs_pino.evaluate_freegs --checkpoint outputs/freegs_run/best.pt
+# 3. 训练模型（默认 --data data/freegs_merged_1500.npz）
+python -m gs_pino.train_freegs --model planet --output-dir outputs/freegs_planet_v9
 
-# 4. 可视化结果
-python -m gs_pino.visualize_freegs --predictions outputs/freegs_run/test_predictions.pt
+# 4. 测试验证（无 --output-dir，输出到 checkpoint 所在目录）
+python -m gs_pino.evaluate_freegs --checkpoint outputs/freegs_planet_v9/best.pt
+
+# 5. 可视化结果
+python -m gs_pino.visualize_freegs --predictions outputs/freegs_planet_v9/test_predictions.pt
 ```
 
-### 11.10 可视化输出
+> 模块调用需 `PYTHONPATH=src` 或 `pip install -e .`（同第 9 章说明）。
+
+### 11.10 可视化输出（visualize_freegs）
 
 | 文件 | 描述 |
 |------|------|
-| `psi_comparison_*.png` | ψ分布对比图（真值/预测/误差） |
-| `error_heatmap_*.png` | 绝对/相对误差热力图 |
-| `lcfs_comparison_*.png` | LCFS轮廓对比图 |
-| `plasma_zoom_*.png` | 等离子体区域放大图 |
+| `psi_total_comparison_*.png` | ψ 分布对比图（真值/预测/误差） |
+| `psi_total_error_heatmap_*.png` | 绝对/相对误差热力图 |
+| `psi_total_lcfs_comparison_*.png` | LCFS 轮廓对比图 |
+| `psi_total_plasma_zoom_*.png` | 等离子体区域放大图 |
+
+`--predict-plasma` 模式另输出 `psi_plasma_*` 一套。
 
 ---
 
-## 12. PlaNetCore v8 版本详解
+## 12. 当前模型与实验结果（v9 / U-FNO v2）
 
-### 12.1 版本概述
+### 12.1 版本演进
 
-v8 是自由边界 GS PINO 的最终版本，采用 **PlaNetCore**（Trunk-Branch-Decoder）架构，在 1500 样本数据集上训练，实现了良好的预测精度和物理约束满足度。
+| 版本 | 架构 | 数据集 | 等离子体 rel L2 均值 | 备注 |
+|------|------|--------|---------------------|------|
+| v8 | PlaNetCore | 1500 样本 | ~10.06% | 历史版本，输出目录已不存在 |
+| v9 | PlaNetCore + 曲率损失 | 1500 样本 | 9.57% | 预测 ψ_total 的基线 |
+| ufno_mse | U-FNO v2（纯 MSE） | 1500 样本 | 10.02% | 无物理约束 |
+| ufno_v2 | U-FNO v2（全物理约束） | 1500 样本 | 18.03% | 强物理约束反而变差 |
+| plasma | PlaNetCore + predict_plasma | 1500 样本 | 8.64% | 预测 ψ_plasma（线圈通量解析扣除） |
+| plasma_mse | 同 plasma | 1500 样本 | 8.29% | 约束 scale 组合调整 |
+| plasma_opt | 同 plasma | 1500 样本 | 7.55% | 权重再优化 |
+| **plasma_coil** | **同 plasma + `--use-coil-input`** | 1500 样本 | **6.89%** | **当前最优**，线圈通量作为额外输入通道 |
+| plasma_soft | 同 plasma_coil | 1500 样本 | 7.27% | 复现运行：同配置（seed=0、500 epochs、patience=100），两次均在 epoch 201 早停，结果可复现（随机波动 ~0.4pp） |
 
-**核心改进**：
-- 全新的 PlaNetCore 架构（替代原 U-FNO）
-- 多种子数据集合并（1500 样本）
-- 物理约束损失函数（磁轴约束、Ip 约束）
-- 课程学习策略
-- 数据预加载优化
+### 12.2 模型架构
 
-### 12.2 模型架构：PlaNetCore
+#### 12.2.1 PlaNetCore（默认模型）
 
-PlaNetCore 采用经典的 **Trunk-Branch-Decoder** 结构，将空间坐标信息和物理参数信息分离处理后融合。这种架构的核心思想是：
+Trunk-Branch-Decoder 结构：
 
-1. **Trunk Network**：学习空间坐标的通用特征表示，不依赖于具体的物理参数
-2. **Branch Network**：学习物理参数的特征表示，编码不同物理配置
-3. **Decoder**：将两种特征融合，生成最终的二维通量场
+| 组件 | 结构 |
+|------|------|
+| **TrunkNet** | R/Z 坐标 2 通道 → Conv2dNornAct（16→32→64→128，3×3 + LayerNorm + TrainableSwish）+ MaxPool → Linear(2048→256→hidden_dim)；可选 FourierEncoding 位置编码（`--fourier-freqs`） |
+| **BranchNet** | 9 维参数 → Linear(9→256→512→256→hidden_dim)，LayerNorm + TrainableSwish；可选 dropout（`--dropout`） |
+| **DecoderConv** | Branch ⊗ Trunk 逐元素乘 → Linear(hidden→256×4×4) → 4 级 ConvTranspose2d（256→128→64→32→16）+ Conv2dNornAct → Conv2d(16→1)，输出 64×64 |
+| **CoilEncoder**（可选，`--use-coil-input`） | 对 psi_coils 场做 4 级卷积编码（1→16→32→64），与 Branch 特征拼接后 Linear 投影 |
 
-整体架构流程图：
+- 输入为四元组 `(x_meas, R, Z, psi_coils)`；参数量约 3.2M（hidden_dim=256）
+- Conv2dNornAct 模块：`Conv2d(3×3) → permute → LayerNorm → TrainableSwish → permute`
+- TrainableSwish：`x · sigmoid(β·x)`，β 可学习
 
-![PlaNetCore Architecture](outputs/freegs_planet_v8/model_architecture.png)
+#### 12.2.2 U-FNO v2（`--model ufno`）
 
-**模型输入输出维度**：
-- **输入**：`(x_meas, x_r, x_z)` — 9维物理参数 + R/Z网格坐标
-- **输出**：`psi_total` — 64×64 的极向磁通场
+固定边界章节 4.5 节所述 `UFNO2d_v2` 的 12 通道版本：lift → 6×UFNOBlock_v2（GroupNorm + 残差连接）→ proj，width=128、modes=32。AMP 自动关闭。
 
-**参数量**：约 3.2M 可训练参数
+#### 12.2.3 PlaNetAttention（实验性）
 
-#### 12.2.1 Trunk Network（空间特征提取）
-
-TrunkNet 负责从 R/Z 网格坐标中学习空间特征表示：
-
-| 阶段 | 操作 | 输出形状 |
-|------|------|----------|
-| Input | R, Z 网格拼接 | [B, 2, 64, 64] |
-| Conv1 | Conv2dNornAct(2→16) + MaxPool2d(2) | [B, 16, 32, 32] |
-| Conv2 | Conv2dNornAct(16→32) + MaxPool2d(2) | [B, 32, 16, 16] |
-| Conv3 | Conv2dNornAct(32→64) + MaxPool2d(2) | [B, 64, 8, 8] |
-| Conv4 | Conv2dNornAct(64→128) + MaxPool2d(2) | [B, 128, 4, 4] |
-| Flatten | - | [B, 2048] |
-| Linear1 | Linear(2048→256) + LayerNorm + Swish | [B, 256] |
-| Linear2 | Linear(256→hidden_dim) | [B, hidden_dim] |
-
-**Conv2dNornAct 模块**：
-```
-Conv2d(in→out, 3×3, padding=same)
-  ↓
-permute(0, 2, 3, 1)  # [B, C, H, W] → [B, H, W, C]
-  ↓
-LayerNorm(C)
-  ↓
-TrainableSwish()
-  ↓
-permute(0, 3, 1, 2)  # [B, H, W, C] → [B, C, H, W]
-```
-
-#### 12.2.2 Branch Network（参数特征提取）
-
-BranchNet 负责从 9 个物理参数中学习参数特征表示：
-
-| 阶段 | 操作 | 输出形状 |
-|------|------|----------|
-| Input | 9 个物理参数 | [B, 9] |
-| Linear1 | Linear(9→256) + LayerNorm + Swish | [B, 256] |
-| Linear2 | Linear(256→512) + LayerNorm + Swish | [B, 512] |
-| Linear3 | Linear(512→256) + LayerNorm + Swish | [B, 256] |
-| Linear4 | Linear(256→hidden_dim) | [B, hidden_dim] |
-
-**输入参数**（9 维）：
-- 4 个 PF 线圈电流
-- Ip（等离子体电流）
-- paxis（轴压强）
-- alpha_m, alpha_n（剖面形状指数）
-- fvac（真空 f 值）
-
-#### 12.2.3 Decoder（特征融合与输出）
-
-Decoder 将 Trunk 和 Branch 的特征融合后上采样到原始分辨率：
-
-| 阶段 | 操作 | 输出形状 |
-|------|------|----------|
-| Fusion | Branch ⊗ Trunk（逐元素乘法） | [B, hidden_dim] |
-| Linear | Linear(hidden→256×4×4) | [B, 4096] |
-| Reshape | - | [B, 256, 4, 4] |
-| Deconv1 | ConvTranspose2d(256→128, 4×4, stride=2) + Conv2dNornAct | [B, 128, 8, 8] |
-| Deconv2 | ConvTranspose2d(128→64, 4×4, stride=2) + Conv2dNornAct | [B, 64, 16, 16] |
-| Deconv3 | ConvTranspose2d(64→32, 4×4, stride=2) + Conv2dNornAct | [B, 32, 32, 32] |
-| Deconv4 | ConvTranspose2d(32→16, 4×4, stride=2) + Conv2dNornAct | [B, 16, 64, 64] |
-| Output | Conv2d(16→1, 3×3, padding=same) | [B, 1, 64, 64] |
-
-#### 12.2.4 TrainableSwish 激活函数
-
-采用可训练的 Swish 激活函数，β 参数可学习：
-
-```python
-class TrainableSwish(nn.Module):
-    def __init__(self, beta: float = 1.0):
-        super().__init__()
-        self.beta = nn.Parameter(torch.tensor(beta))
-    
-    def forward(self, x):
-        return x * F.sigmoid(self.beta * x)
-```
+`models.py` 中定义了带 MultiheadAttention 的变体：branch 特征作 query，trunk 特征作 key/value，注意力输出与 trunk 相加后进 decoder。通过 `--model planet_attn` 启用（train_freegs / evaluate_freegs 均已支持该选项，输入为四元组 `(x_meas, R, Z, psi_coils)`，同 PlaNetCore）。尚未跑过完整实验。
 
 ### 12.3 数据集
 
-#### 12.3.1 数据生成流程
+- 三个子数据集（seed 42 / 100 / 200 各 500 样本）合并为 `data/freegs_merged_1500.npz`（1500 样本）
+- 实际文件：`freegs_rhs_500.npz`（seed 42）、`freegs_seed100.npz`、`freegs_seed200.npz`
+- 生成脚本保存 `greens / psi_plasma_norm / coil_names` 字段，但 `merge_datasets.py` 合并时不含这些键
+- 数据预加载（`_preload_data`）：初始化时一次性完成全部插值并缓存，训练速度提升约 36×（47s/epoch → 1.3s/epoch）
+- 划分：训练 1050 / 验证 225 / 测试 225（70/15/15，`split_indices`；测试取排列最前，同固定边界）
 
-![Data Flow](outputs/freegs_planet_v8/data_flow.png)
+### 12.4 训练策略（课程学习）
 
-#### 12.3.2 多种子数据集合并
-
-为增加样本多样性，使用三个不同随机种子生成数据集：
-
-| 种子 | 样本数 | 文件 |
-|------|--------|------|
-| 42 | 500 | `data/freegs_dataset_500.npz` |
-| 100 | 500 | `data/freegs_dataset_500_seed100.npz` |
-| 200 | 500 | `data/freegs_dataset_500_seed200.npz` |
-
-合并后：`data/freegs_merged_1500.npz`（1500 样本）
-
-#### 12.3.3 参数采样范围
-
-| 参数 | 范围 | 单位 |
-|------|------|------|
-| Ip | 1.5e5 - 2.5e5 | A |
-| paxis | 800 - 1500 | Pa |
-| alpha_m | 1.0 - 2.0 | - |
-| alpha_n | 1.5 - 2.5 | - |
-| fvac | 1.8 - 2.2 | - |
-| PF coil I0-I3 | -10000 - 10000 | A |
-
-#### 12.3.4 数据集划分
-
-| 数据集 | 样本数 | 比例 |
-|--------|--------|------|
-| 训练集 | 1050 | 70% |
-| 验证集 | 225 | 15% |
-| 测试集 | 225 | 15% |
-
-#### 12.3.5 数据预加载优化
-
-为解决训练卡顿问题，实现了数据预加载机制：
-
-```python
-def _preload_data(self):
-    """预加载所有样本的插值数据到内存"""
-    self.preloaded_data = []
-    for i in range(len(self)):
-        # 一次性计算所有插值，缓存到内存
-        psi_interp = self._interpolate_psi(i)
-        coils_interp = self._interpolate_coils(i)
-        self.preloaded_data.append((psi_interp, coils_interp))
+```
+epoch 0-9       : warmup，仅 MSE
+epoch 10-99     : 仅 MSE（mse_only_epochs = 100）
+epoch 100-249   : PDE 线性 ramp（pde_ramp_epochs = 150，0 → 满值）
+epoch 150+      : axis 约束开启
+epoch 200+      : ip 约束开启
+epoch 250+      : curvature 约束开启
 ```
 
-**效果**：训练速度从 ~47s/epoch 提升到 ~1.3s/epoch（36x 加速）
+- 学习率：前 10 epoch 线性预热到 5e-4，之后余弦退火（CosineAnnealingLR）
+- 优化器 AdamW（weight_decay=1e-6），梯度裁剪 1.0
+- 早停：patience=80，min_epochs=150
+- history.json 记录每轮 `train_/val_` 的 rmse / pde / axis / ip / curvature / normalized_error / total 及各约束的 scale
 
-### 12.4 损失函数
+### 12.5 评估结果（225 测试样本）
 
-#### 12.4.1 多约束损失组合
+#### 12.5.1 v9（PlaNetCore + curvature）
 
-采用四分量加权损失函数，综合数据拟合和物理约束：
+最优 val_total = 3.86e-05（epoch 30），共训练 110 epochs（早停终止）。
 
-![Loss Structure](outputs/freegs_planet_v8/loss_structure.png)
+| 指标 | 全局 | 等离子体区域 |
+|------|------|-------------|
+| MSE | 3.91e-05 | 9.56e-05 |
+| rel L2 mean | 12.25% | **9.57%** |
+| rel L2 median | 8.96% | 6.46% |
+| rel L2 P95 | 29.85% | 27.43% |
+| rel L2 max | 69.7% | 48.8% |
 
-| 损失类型 | 权重 | 作用域 | 描述 |
-|---------|------|--------|------|
-| global_mse | 1.0 | 整个计算域 | 数据拟合损失 |
-| gs_residual_loss_freebnd | 0.01 | 等离子体区域 | GS 方程残差约束 |
-| axis_constraint_loss | 0.01 | 磁轴位置 | ψ_plasma_norm = 1 的约束 |
-| ip_constraint_loss_freebnd | 0.001 | 等离子体区域 | 等离子体电流积分约束 |
+#### 12.5.2 ufno_mse（U-FNO v2 纯 MSE，scale 全部为 0）
 
-**总损失公式**：
-```
-L_total = L_MSE + 0.01 × L_PDE + 0.01 × L_axis + 0.001 × L_ip
-```
+最优 val_total = 4.33e-05（epoch 226），共训练 326 epochs。
 
-#### 12.4.2 各损失详细定义
+| 指标 | 全局 | 等离子体区域 |
+|------|------|-------------|
+| MSE | 4.94e-05 | 1.28e-04 |
+| rel L2 mean | 13.68% | 10.02% |
+| rel L2 median | 10.52% | 7.03% |
 
-**1. Global MSE Loss**
+#### 12.5.3 ufno_v2（U-FNO v2 全物理约束）
 
-```python
-loss_mse = Σ(pred - target)² / N
-```
+最优 val_total = 1.74e-04（epoch 30），共训练 201 epochs。
 
-**2. GS PDE Residual Loss**
+| 指标 | 全局 | 等离子体区域 |
+|------|------|-------------|
+| MSE | 1.79e-04 | 2.47e-04 |
+| rel L2 mean | 30.06% | 18.03% |
 
-```python
-Δ*ψ = ∂²ψ/∂R² - (1/R)·∂ψ/∂R + ∂²ψ/∂Z²
-source = μ₀ R² p'(ψ) + FF'(ψ)
-residual = Δ*ψ + source
-loss_pde = Σ(residual² · plasma_mask) / Σ(plasma_mask)
-```
+#### 12.5.4 predict_plasma 系列（当前最优）
 
-**3. Magnetic Axis Constraint**
+`--predict-plasma` 模式下模型直接预测 ψ_plasma（线圈真空通量由 Green 函数解析计算，ψ_total = ψ_plasma + ψ_coils）。测试集指标（225 样本）：
 
-```python
-ψ_plasma_norm = (ψ_total - ψ_coils) / (ψ_axis - ψ_lcfs)
-loss_axis = (ψ_plasma_norm(axis) - 1.0)²
-```
-
-**4. Plasma Current Constraint**
-
-```python
-J_φ = (1/μ₀) · (1/R) · ∂(R·FF')/∂ψ
-Ip_pred = ∫∫ J_φ dR dZ
-loss_ip = (Ip_pred - Ip_target)² / Ip_target²
-```
-
-### 12.5 训练策略
-
-#### 12.5.1 课程学习（Curriculum Learning 2.0）
-
-采用三阶段课程学习策略，逐步引入物理约束。这种策略的核心思想是先让模型学习基础的数据拟合能力，再逐步引入物理约束，避免因物理约束突然引入导致的训练不稳定。
-
-训练策略示意图：
-
-![Training Strategy](outputs/freegs_planet_v8/training_strategy.png)
-
-**阶段划分**：
-
-| 阶段 | Epochs | 损失组成 | 描述 |
-|------|--------|----------|------|
-| Warmup | 0-9 | 仅 global_mse | 学习率从 0 线性增长到目标值 |
-| MSE-only | 10-29 | 仅 global_mse | 基础数据拟合训练 |
-| MSE + Axis | 30-49 | MSE + axis 约束 | 引入磁轴约束 |
-| PDE Ramp-up | 50-129 | MSE + axis + ip + 逐渐增加 PDE | PDE 约束线性增长 |
-| Full Constraints | 130+ | 全部损失权重 | 所有约束达到目标权重 |
-
-**约束引入时间表**：
-
-| 约束 | 引入 epoch | 权重增长方式 | 最终权重 |
-|------|-----------|-------------|----------|
-| axis | 30 | 立即达到目标值 | 0.01 |
-| ip | 50 | 立即达到目标值 | 0.001 |
-| pde | 50 | 80 epoch 线性增长 | 0.01 |
-
-**学习率调度**：
-- 前 10 epoch：线性预热（0 → 5e-4）
-- 第 11 epoch 后：余弦退火（从 5e-4 逐渐衰减）
-
-#### 12.5.2 训练超参数
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| hidden_dim | 256 | 网络隐藏维度 |
-| batch_size | 32 | 批次大小 |
-| lr | 5e-4 | 学习率 |
-| epochs | 300 (实际151) | 最大训练轮数 |
-| warmup_epochs | 10 | 学习率预热轮数 |
-| patience | 80 | 早停耐心值 |
-| min_epochs | 150 | 最小训练轮数 |
-| clip_grad | 1.0 | 梯度裁剪阈值 |
-| scale_mse | 1.0 | MSE 损失权重 |
-| scale_pde | 0.01 | PDE 损失权重 |
-| scale_axis | 0.01 | 磁轴约束权重 |
-| scale_ip | 0.001 | Ip 约束权重 |
-
-#### 12.5.3 优化器与调度器
-
-- **优化器**：AdamW（weight_decay=1e-6）
-- **学习率调度**：余弦退火（CosineAnnealingLR），预热后启动
-
-### 12.6 评估结果
-
-#### 12.6.1 测试集指标
-
-在 225 个测试样本上的评估结果：
-
-| 指标 | 值 | 说明 |
-|------|-----|------|
-| Global MSE | 0.000039 | 整个计算域的均方误差 |
-| Plasma MSE | 0.000122 | 等离子体区域的均方误差 |
-| Global RMSE | 0.00622 | 全局根均方误差 |
-| Plasma RMSE | 0.01104 | 等离子体区域根均方误差 |
-| Relative L2 Error (Global) - Mean | 0.1200 | 全局相对误差均值（12%） |
-| Relative L2 Error (Global) - Median | 0.0898 | 全局相对误差中位数（9%） |
-| Relative L2 Error (Global) - P95 | 0.3412 | 全局相对误差95分位数（34%） |
-| Relative L2 Error (Global) - Max | 0.6008 | 全局相对误差最大值（60%） |
-| Relative L2 Error (Plasma) - Mean | **0.1006** | 等离子体区域相对误差均值（10%） |
-| Relative L2 Error (Plasma) - Median | **0.0651** | 等离子体区域相对误差中位数（6.5%） |
-| Relative L2 Error (Plasma) - P95 | 0.3113 | 等离子体区域相对误差95分位数（31%） |
-| Relative L2 Error (Plasma) - Max | 0.6128 | 等离子体区域相对误差最大值（61%） |
+| 版本 | 等离子体 rel L2 | 等离子体 MSE | 全局 MSE | ψ_total rel L2 | 说明 |
+|------|----------------|--------------|----------|----------------|------|
+| plasma | 8.64% | 1.09e-04 | 3.82e-05 | 10.57% | 首个 predict_plasma 实验 |
+| plasma_mse | 8.29% | 1.14e-04 | 3.81e-05 | 10.19% | 约束 scale 调整 |
+| plasma_opt | 7.55% | 9.68e-05 | 3.15e-05 | 9.28% | 权重再优化 |
+| **plasma_coil** | **6.89%** | **1.02e-05** | **1.61e-05** | **8.33%** | + `--use-coil-input` |
+| plasma_soft | 7.27% | 1.40e-05 | 2.40e-05 | 8.81% | plasma_coil 复现运行（配置相同） |
 
 **关键发现**：
-- 等离子体区域的预测精度高于全局精度（Mean 10% vs 12%）
-- 中位数误差（6.5%）显著低于均值（10%），表明大部分样本预测良好
-- 少数样本存在较大误差（P95=31%），可能是由于物理参数边界情况导致
+- **plasma_coil 为当前全局最优**（等离子体 rel L2 6.89%），比 v9（9.57%）显著改善；psi_coils 场作为第 12 个输入通道（CoilEncoder 编码）信息量最大
+- 预测 ψ_plasma 天然剔除线圈主导成分（线圈通量约占总通量 91.8%），让网络专注于等离子体形状
+- 通道错位 bug（见 11.4 节）修复后数据才真正按 `[coil0-3, Ip, paxis, alpha_m, alpha_n, fvac]` 顺序输入，coil 系列结果有效
+- ufno_v2（强物理约束）显著变差——U-FNO v2 下物理约束的加入方式仍需调优（可能与 AMP 强制关闭、课程学习时间表不匹配有关）
+- 少数样本误差大（P95 偏高），多位于参数域边界
 
-#### 12.6.2 训练曲线
+### 12.6 运行命令
 
-训练曲线显示各损失分量的收敛情况（对数坐标）：
+```bash
+# v9 训练（PlaNetCore + 曲率损失）
+python -m gs_pino.train_freegs --model planet --data data/freegs_merged_1500.npz \
+    --output-dir outputs/freegs_planet_v9 --hidden-dim 256 \
+    --scale-mse 1.0 --scale-pde 0.01 --scale-axis 0.01 \
+    --scale-ip 0.001 --scale-curvature 0.5
 
-![Training Curves](outputs/freegs_planet_v8/training_curves.png)
+# U-FNO 训练（纯 MSE 对照）
+python -m gs_pino.train_freegs --model ufno --data data/freegs_merged_1500.npz \
+    --output-dir outputs/freegs_ufno_mse \
+    --scale-pde 0.0 --scale-axis 0.0 --scale-ip 0.0 --scale-curvature 0.0
 
-**训练曲线分析**：
-- **RMSE 损失**：在前 30 epoch 快速下降，引入 axis 约束后有短暂回升，随后继续下降
-- **PDE 残差**：在第 50 epoch 开始引入后逐渐下降，表明模型逐渐学习满足 GS 方程
-- **Axis 约束**：引入后迅速下降并保持在较低水平
-- **Ip 约束**：同样在引入后快速收敛
+# 评估（无 --output-dir，输出到 checkpoint 目录）
+python -m gs_pino.evaluate_freegs --checkpoint outputs/freegs_planet_v9/best.pt
 
-训练在第 151 epoch 因早停机制触发而终止（验证损失连续 80 epoch 未下降）
-
-#### 12.6.3 可视化对比
-
-生成了 5 个测试样本的详细对比图，保存在 `visualizations/` 目录：
-
-| 文件类型 | 描述 | 用途 |
-|----------|------|------|
-| `contour_*.png` | 等值线对比图（真值/预测/误差） | 直观观察 ψ_total 分布的整体差异 |
-| `error_*.png` | 绝对/相对误差分布图 | 定位误差较大的区域 |
-| `linecuts_*.png` | 截面线图（Z=常数, R=常数） | 分析特定位置的精度 |
-| `scatter_all.png` | 预测值 vs 真实值散点图 | 评估整体线性度 |
-| `error_histogram.png` | 误差分布直方图 | 了解误差统计分布 |
-
-**可视化分析结论**：
-- 等值线对比图显示模型能较好地预测等离子体边界和通量分布
-- 误差主要集中在 LCFS 边界附近和磁轴区域
-- 散点图显示预测值与真实值具有良好的线性相关性（R² ≈ 0.95）
+# 可视化
+python -m gs_pino.visualize_freegs --predictions outputs/freegs_planet_v9/test_predictions.pt
+```
 
 ### 12.7 关键改进与经验总结
 
-#### 12.7.1 架构改进
-
-| 改进项 | 原方案 | 新方案 | 效果 |
-|--------|--------|--------|------|
-| 网络架构 | U-FNO | PlaNetCore | 更好的空间-参数分离学习，减少冗余计算 |
-| 空间处理 | R/Z 分离 | R/Z 合并（2通道） | 增强空间特征融合，捕捉 R-Z 耦合关系 |
-| 解码器 | UpsamplingBilinear2d | ConvTranspose2d | 更好的上采样质量，保留高频细节 |
-| 激活函数 | GELU | TrainableSwish | 可学习的非线性，自适应调整激活强度 |
-| 归一化 | BatchNorm | LayerNorm | 更稳定的训练，不受批次大小影响 |
-
-**架构设计原理**：
-- PlaNetCore 的 Trunk-Branch 结构天然适合参数化偏微分方程问题，其中 Trunk 学习空间通用特征，Branch 编码特定物理配置
-- LayerNorm 替换 BatchNorm 解决了小批量训练时的统计不稳定问题
-- TrainableSwish 允许网络学习最优的非线性激活函数形状
-
-#### 12.7.2 训练改进
-
-| 改进项 | 原方案 | 新方案 | 效果 |
-|--------|--------|--------|------|
-| 学习率 | 固定 | Warmup + CosineAnnealing | 更稳定的收敛，避免初期震荡 |
-| 数据加载 | 懒加载 | 预加载 | 36x 训练速度提升（从 47s/epoch 到 1.3s/epoch） |
-| 损失权重 | 固定 | 课程学习（逐步引入） | 避免约束引入导致的训练不稳定 |
-| 梯度裁剪 | 无 | clip_grad=1.0 | 防止梯度爆炸，稳定训练过程 |
-| 指标输出 | MSE | RMSE + 归一化误差 | 更直观的误差评估 |
-
-**数据预加载优化细节**：
-- 原始实现中，每个样本的插值操作（使用 scipy.interpolate.RegularGridInterpolator）在 `__getitem__` 中按需执行
-- 优化后，在数据集初始化时一次性计算并缓存所有样本的插值结果
-- 这是训练速度提升的最关键因素，解决了 Windows 环境下训练卡顿问题
-
-#### 12.7.3 经验教训
-
-1. **数据加载是瓶颈**：昂贵的插值操作（scipy.interpolate.RegularGridInterpolator）在每个 `__getitem__` 中调用会严重拖慢训练。预加载机制是解决此问题的有效方案。
-
-2. **课程学习有效**：直接引入强物理约束会导致模型不稳定甚至发散。通过逐步引入约束（先 MSE-only，再 axis，最后 PDE），模型能平稳过渡并学习物理规律。
-
-3. **损失权重需要精细调优**：PDE 约束过强会降低数据保真度，过弱则无法提供物理正则化效果。当前权重（PDE=0.01, axis=0.01, ip=0.001）是经过多次实验得到的较优配置。
-
-4. **归一化指标更直观**：由于 ψ_total 绝对值很小（均值约 0.03，标准差约 0.03），RMSE 和归一化误差比 MSE 更能反映模型性能。
-
-5. **GPU 训练至关重要**：RTX 5060 GPU 训练速度比 CPU 快约 1.6x，且混合精度训练（AMP）进一步提升了内存效率。
-
-6. **网格尺寸限制**：freegs 求解器要求网格尺寸为 2ⁿ + 1（如 65），但混合精度 FFT 要求网格尺寸为 2ⁿ（如 64）。解决方案是在训练时插值到 64×64 网格。
-
-### 12.8 运行命令
-
-```bash
-# 训练命令
-python -m src.gs_pino.train_freegs --data data/freegs_merged_1500.npz \
-    --output-dir outputs/freegs_planet_v8 --epochs 300 --batch-size 32 \
-    --lr 5e-4 --hidden-dim 256 --scale-mse 1.0 --scale-pde 0.01 \
-    --scale-axis 0.01 --scale-ip 0.001 --accum-steps 1 --amp \
-    --warmup-epochs 10 --patience 80 --min-epochs 150
-
-# 评估命令
-python -m src.gs_pino.evaluate_freegs --checkpoint outputs/freegs_planet_v8/best.pt \
-    --data data/freegs_merged_1500.npz --output-dir outputs/freegs_planet_v8
-
-# 可视化命令
-python -m src.gs_pino.visualize_results --predictions outputs/freegs_planet_v8/test_predictions.pt \
-    --data data/freegs_merged_1500.npz --output-dir outputs/freegs_planet_v8/visualizations
-```
+| 改进项 | 说明 |
+|--------|------|
+| 数据预加载 | 插值操作（RegularGridInterpolator）从 `__getitem__` 移到初始化阶段一次性缓存，训练速度提升约 36× |
+| 课程学习 | 先 MSE-only 再逐步引入 axis/ip/PDE/curvature，避免物理约束突然引入导致训练不稳定 |
+| 曲率损失 | 二阶导平滑约束（scale 0.5）在 v9 中进一步压低等离子体区域误差 |
+| 损失权重 | PDE=0.01 / axis=0.01 / ip=0.001 / curvature=0.5 为当前较优配置；U-FNO 上过强物理约束（ufno_v2）反而恶化精度 |
+| 归一化指标 | ψ_total 绝对值很小（均值约 0.03），RMSE 与归一化误差比 MSE 更直观 |
+| 网格尺寸 | freegs 要求 2ⁿ+1（65），FFT/AMP 要求 2ⁿ（64），训练时插值到 64×64 |
 
 ---
 
-## 13. 依赖
+## 13. 解析解验证（verification/）
+
+`src/gs_pino/verification/` 目录包含一组**广义 Solov'ev 解析解**与 gspack 数值求解器的交叉验证脚本（独立可运行，输出 PNG 到 `outputs/`）：
+
+| 文件 | 功能 |
+|------|------|
+| verify_solovev.py / _2d / _analytic / _math / _correct | 纯解析验证：广义 Solov'ev 解是否满足 GS 方程（Δ*ψ = -μ₀RJ_φ），1D 归一化坐标与 65×65 二维网格两种形式 |
+| verify_solovev_canonical.py / _gspack / _final | gspack 参数化（Jtor 公式 + gs_sparse_2nd 算子）下解析解与 gspack 数值解对比 |
+| verify_gspack_consistency.py / _gs | gspack 解自洽性（A@ψ + μ₀RJ_φ 残差）+ 网格收敛测试（33/65/129 三档） |
+| benchmark_solovev.py | 主基准 CLI：解析 Solov'ev vs gspack vs freegs（可选），输出 RMSE / max error / rel L2 / R_axis 差等 4 图（参数：--R0 --a --kappa --delta --Ip --betap --alpha-m --alpha-n --nx/--ny --gspack-compat） |
+| benchmark_summary.py | 汇总验证（固定 R0=1, a=0.5, kappa=1, δ=0, Ip=2e5, betap=0.5, αm=1, αn=2, 65×65） |
+
+**验证结论**：
+1. gspack 固定边界求解器正确求解 GS 方程（自洽残差内域 RMSE PASSED）
+2. 广义 Solov'ev 平衡是有效的 GS 方程解析解
+3. Solov'ev 与 gspack 数值解之间的差异可由 Shafranov 位移和边界效应合理解释
+4. **建议使用 gspack 数值解作为固定边界平衡验证的基准**
+
+> 注意：gspack 相关脚本硬编码 `d:/D_F/Fusion/AI/PINN/gspack2_TRAE` 路径（sys.path 注入）。`verify_solovev_gspack.py` 的输出路径已修复为基于仓库根目录的 `outputs/`（不再依赖 CWD），可直接从任何目录运行（`PYTHONPATH=src python src/gs_pino/verification/verify_solovev_gspack.py`）。
+
+---
+
+## 14. 辅助工具与脚本
+
+### 14.1 历史实验复现（scripts/）
+
+所有历史版本的精确运行命令集中在 [scripts/EXPERIMENTS.md](../scripts/EXPERIMENTS.md)，一键执行：
+
+```bash
+bash scripts/reproduce_freegs.sh                # 全部自由边界实验
+bash scripts/reproduce_freegs.sh plasma_coil    # 单个实验（训练 + 评估）
+bash scripts/reproduce_fixed.sh v41_fixed       # 固定边界同理
+```
+
+命令由 `scripts/gen_reproduce.py` 从每个 checkpoint 的 `args` 自动重建（含日期、配置变体、`test_metrics.json` 最优指标注释），与历史实际运行的参数逐项一致；新增实验后重跑生成器即可同步更新。注意重跑会覆盖对应目录的 `best.pt`。
+
+### 14.2 merge_datasets.py
+
+合并多个 freegs 数据集：`--inputs f1.npz f2.npz ... --output out.npz`，沿样本轴拼接 `R, Z, psi_total, psi_plasma, psi_coils, mask, rhs, coil_currents, params, axes, L, Beta0`。
+
+### 14.3 inference_freegs.py
+
+自由边界推理 CLI：加载 checkpoint 后由 `compute_greens` / `compute_psi_coils` 计算线圈真空通量，输出 `psi_total = psi_plasma + psi_coils`。已修复：导入改为 `data_freegs.build_ufno_input` + `models.PlaNetCore/UFNO2d_v2`，按 checkpoint 读取 `model_type / hidden_dim / dropout / fourier_freqs / use_coil_input / modes / width / layers / predict_plasma` 重建模型，输入统一转为 float32（conv 权重为 float32）。支持 `--model planet|ufno` 两种 checkpoint。
+
+### 14.4 visualize_results.py
+
+从 checkpoint 读取 `test_predictions.pt` 生成等值线对比 / 误差分布 / R-Z 线切割 / 散点图 / 误差直方图。CLI 为 `--checkpoint --data --num-samples`（**没有** `--predictions`/`--output-dir`）。已修复键兼容：优先读 `preds_total`/`targets_total`（ψ_total 对比），旧格式 `preds`/`targets` 自动回退，两种 evaluate 输出均可渲染。
+
+### 14.5 configs/（供参考，代码不加载）
+
+- `default.yaml` — 小型开发配置（64 样本 64×64，20 epochs，modes 16/16 width 32）
+- `practical.yaml` — 实用配置（4096 样本 128×128，250 epochs，modes 24/24 width 64 layers 5，pde 0.02 / bc 0.10）
+
+两文件为参数备忘（全代码无 YAML 解析逻辑），同名参数由 `scripts/` 内 shell 脚本硬编码镜像。
+
+### 14.6 scripts/
+
+- `gen_reproduce.py` — **历史实验复现生成器**：扫描 `outputs/*/best.pt`，从 checkpoint `args` 重建精确 CLI，生成 `reproduce_freegs.sh` / `reproduce_fixed.sh`（含日期、配置变体、最优指标注释）。新增实验后重跑即可
+- `reproduce_freegs.sh` — 自由边界 10 个历史实验一键复现（每实验 = 训练 + 评估）
+- `reproduce_fixed.sh` — 固定边界 6 个历史实验一键复现
+- `EXPERIMENTS.md` — 历史实验索引（版本 → 配置 → 结果 → 复现命令），见 14.1
+- `run_smoke.sh` — 冒烟测试：16 样本 32×32 数据集 → 训练 2 epochs 迷你模型 → 评估 3 张图
+- `run_practical.sh` — 端到端实用流程：4096 样本 128×128（seed 2026）→ 训练 250 epochs → 评估 24 图；`export PYTHONPATH=...:src` 后调用 `python -m gs_pino.*`；环境变量可覆盖 DATA_PATH / RUN_DIR / EVAL_DIR / N_SAMPLES / NR / NZ / EPOCHS / BATCH_SIZE
+
+---
+
+## 15. 依赖
 
 ### Python 包
 - `torch >= 2.0`

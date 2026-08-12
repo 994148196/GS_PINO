@@ -191,12 +191,66 @@ def main() -> None:
         with torch.no_grad():
             pred = model(x[None].to(device)).cpu().numpy()[0, 0]
 
-        # 获取 psi_lcfs 和 psi_axis 用于还原真实 psi 值
         psi_lcfs = meta["psi_lcfs"]
         psi_axis = meta["psi_axis"]
 
         plot_case(
             case_dir / f"case_{local_idx:03d}.png",
+            raw["R"][raw_idx],
+            raw["Z"][raw_idx],
+            y.numpy()[0],
+            pred,
+            mask.numpy()[0],
+            params_tensor.numpy(),
+            float(rel_array[local_idx]),
+            psi_lcfs,
+            psi_axis,
+        )
+
+    # Save best and worst cases for detailed comparison
+    n_extreme = 3
+    sorted_indices = np.argsort(rel_array)
+    best_indices = sorted_indices[:n_extreme]
+    worst_indices = sorted_indices[-n_extreme:]
+
+    best_dir = output_dir / "best_cases"
+    worst_dir = output_dir / "worst_cases"
+    best_dir.mkdir(parents=True, exist_ok=True)
+    worst_dir.mkdir(parents=True, exist_ok=True)
+
+    for rank, local_idx in enumerate(best_indices):
+        raw_idx = int(dataset.indices[local_idx])
+        x, y, mask, _sdf, params_tensor, meta = dataset[local_idx]
+        with torch.no_grad():
+            pred = model(x[None].to(device)).cpu().numpy()[0, 0]
+
+        psi_lcfs = meta["psi_lcfs"]
+        psi_axis = meta["psi_axis"]
+
+        plot_case(
+            best_dir / f"best_{rank+1}_relL2_{rel_array[local_idx]:.3e}.png",
+            raw["R"][raw_idx],
+            raw["Z"][raw_idx],
+            y.numpy()[0],
+            pred,
+            mask.numpy()[0],
+            params_tensor.numpy(),
+            float(rel_array[local_idx]),
+            psi_lcfs,
+            psi_axis,
+        )
+
+    for rank, local_idx in enumerate(worst_indices):
+        raw_idx = int(dataset.indices[local_idx])
+        x, y, mask, _sdf, params_tensor, meta = dataset[local_idx]
+        with torch.no_grad():
+            pred = model(x[None].to(device)).cpu().numpy()[0, 0]
+
+        psi_lcfs = meta["psi_lcfs"]
+        psi_axis = meta["psi_axis"]
+
+        plot_case(
+            worst_dir / f"worst_{rank+1}_relL2_{rel_array[local_idx]:.3e}.png",
             raw["R"][raw_idx],
             raw["Z"][raw_idx],
             y.numpy()[0],

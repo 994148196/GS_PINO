@@ -57,7 +57,7 @@ def build_input(sample: dict[str, np.ndarray], param_mean: np.ndarray | None = N
 class GSDataset(Dataset):
     """PyTorch dataset backed by a generated GS `.npz` archive."""
 
-    def __init__(self, path: str, indices: np.ndarray | None = None, param_norm: Normalization | None = None):
+    def __init__(self, path: str, indices: np.ndarray | None = None, param_norm: Normalization | None = None, profile_norm: Normalization | None = None):
         raw = np.load(path)
         self.R = raw["R"]
         self.Z = raw["Z"]
@@ -77,6 +77,14 @@ class GSDataset(Dataset):
             self.param_norm = Normalization(self.params.mean(axis=0), self.params.std(axis=0) + 1e-6)
         else:
             self.param_norm = param_norm
+
+        if profile_norm is None:
+            self.profile_norm = Normalization(
+                self.profile_params.mean(axis=0),
+                self.profile_params.std(axis=0) + 1e-6
+            )
+        else:
+            self.profile_norm = profile_norm
 
     def __len__(self) -> int:
         """Return the number of selected samples."""
@@ -102,11 +110,14 @@ class GSDataset(Dataset):
         sdf = self.sdf[i][None, ...].astype(np.float32)
         params = self.params[i].astype(np.float32)
 
-        # Per-sample metadata for PDE loss and integral constraints
+        profile_params_raw = self.profile_params[i].astype(np.float32)
+        profile_params_norm = (profile_params_raw - self.profile_norm.mean) / self.profile_norm.std
+
         metadata = {
             "R": torch.from_numpy(self.R[i].astype(np.float32)),
             "Z": torch.from_numpy(self.Z[i].astype(np.float32)),
-            "profile_params": torch.from_numpy(self.profile_params[i].astype(np.float32)),
+            "profile_params": torch.from_numpy(profile_params_norm),
+            "profile_params_raw": torch.from_numpy(profile_params_raw),
             "R0": float(params[0]),
             "alpha_m": float(params[6]),
             "alpha_n": float(params[7]),

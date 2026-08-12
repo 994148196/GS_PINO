@@ -43,8 +43,17 @@ def load_test_data(checkpoint_path: str, data_path: str):
     
     pred_file = Path(checkpoint_path).parent / "test_predictions.pt"
     pred_data = torch.load(pred_file, map_location="cpu", weights_only=False)
-    
-    return pred_data["preds"], pred_data["targets"], pred_data["masks"], metas, test_ds
+
+    # 新版 evaluate_freegs 保存的键：preds / preds_total / targets_plasma / targets_total / masks / interior_masks
+    # 旧版只有 preds / targets / masks。优先使用总通量（psi_total）做对比。
+    preds = pred_data.get("preds_total", pred_data["preds"])
+    if "targets_total" in pred_data:
+        targets = pred_data["targets_total"]
+    else:
+        targets = pred_data["targets"]
+    masks = pred_data["masks"]
+
+    return preds, targets, masks, metas, test_ds
 
 
 def plot_contour_comparison(pred, target, mask, R, Z, idx, output_dir):
