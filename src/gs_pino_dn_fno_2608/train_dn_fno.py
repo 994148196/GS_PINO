@@ -77,7 +77,13 @@ def main() -> None:
                          "and spawn workers deadlock under CPU contention)")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--input-mode", choices=["xpoints", "xa"], default="xpoints",
+                    help="'xa' (data_v3): append the 2 sampled isoflux-anchor "
+                         "coordinates -> 13 channels; default 'xpoints' keeps "
+                         "9/11-channel behavior")
     args = ap.parse_args()
+
+    use_anchor = args.input_mode == "xa"
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     set_seed(args.seed)
@@ -89,12 +95,15 @@ def main() -> None:
     # scaling-study N so input representations are comparable)
     with np.load(args.train_data) as d:
         stats = compute_stats({
-            "params": d["params"], "x_coords": d["x_coords"], "psi_total": d["psi_total"]})
+            "params": d["params"], "x_coords": d["x_coords"], "psi_total": d["psi_total"],
+            **({"anchor": d["anchor"]} if use_anchor else {})},
+            use_anchor=use_anchor)
     train_idx = nested_train_indices(
         len(np.load(args.train_data)["psi_total"]), args.n_train, args.perm_seed)
 
-    train_ds = DNFnoDataset(args.train_data, stats=stats, indices=train_idx)
-    val_ds = DNFnoDataset(args.val_data, stats=stats)
+    train_ds = DNFnoDataset(args.train_data, stats=stats, indices=train_idx,
+                            use_anchor=use_anchor)
+    val_ds = DNFnoDataset(args.val_data, stats=stats, use_anchor=use_anchor)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                               num_workers=args.workers, pin_memory=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
@@ -113,6 +122,8 @@ def main() -> None:
 
     print(f"\n{'='*70}")
     print(f"  DN-FNO training | n_train={args.n_train} | seed={args.seed} | device={device}")
+    print(f"  input mode: {args.input_mode} | scalars: {len(stats['scalar_mean'])} "
+          f"| in_channels: {2 + len(stats['scalar_mean'])}")
     print(f"  model params: {n_params} (paper: 4,770,241)")
     print(f"  lr={args.lr}, wd={args.weight_decay}, batch={args.batch_size}, "
           f"lr patience={args.lr_patience} (x{args.lr_factor}, min {args.min_lr}), "
@@ -176,6 +187,7 @@ def main() -> None:
         "n_params": n_params,
         "n_train": args.n_train,
         "seed": args.seed,
+        "input_mode": args.input_mode,
         "stats": {k: (v.tolist() if hasattr(v, "tolist") else float(v))
                   for k, v in stats.items()},
     }, out_dir / "best.pt")

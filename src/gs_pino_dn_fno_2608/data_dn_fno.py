@@ -4,10 +4,17 @@ Builds the paper's 9-channel input field (Eq. 5 mapping):
     G: (R, Z, Paxis, Ip, fvac, R_lo^X, Z_lo^X, R_up^X, Z_up^X) -> psi(R,Z)
 from the .npz files produced by generate_dn_dataset.py.
 
+Channel count follows the dataset:
+  - data/ (paper):       3 params + 4 X-points =  7 scalars =  9 channels
+  - data_v2/ (alphas):   5 params + 4 X-points =  9 scalars = 11 channels
+  - data_v3/ (alphas + sampled isoflux anchor, use_anchor=True):
+                         5 params + 4 X-points + 2 anchor = 11 scalars = 13 channels
+
 Normalization (paper Sec. II.C):
   - R, Z: linear map to [-1, 1]
   - Paxis, Ip, fvac: z-scored with TRAIN-set mean/std, broadcast to the grid
-  - the 4 X-point coordinates: likewise z-scored with train stats, broadcast
+  - the 4 X-point coordinates (and, with use_anchor, the 2 anchor coords):
+    likewise z-scored with train stats, broadcast
   - target psi: z-scored with TRAIN-set mean/std
 Training loss and relative L2 error are computed in this normalized
 representation; physical quantities use the inverse transform.
@@ -25,11 +32,15 @@ RMIN, RMAX = 0.1, 2.0
 ZMIN, ZMAX = -2.0, 2.0
 
 CHANNEL_NAMES = ["R", "Z", "Paxis", "Ip", "fvac", "R_lo^X", "Z_lo^X", "R_up^X", "Z_up^X"]
+CHANNEL_NAMES_XA = CHANNEL_NAMES + ["R_anc", "Z_anc"]
 
 
-def compute_stats(npz: dict, n: int | None = None) -> dict[str, np.ndarray]:
-    """Train-set mean/std of the 3 run params, 4 X-point coords and target psi.
+def compute_stats(npz: dict, n: int | None = None,
+                  use_anchor: bool = False) -> dict[str, np.ndarray]:
+    """Train-set mean/std of the run params, 4 X-point coords and target psi.
 
+    use_anchor=True (data_v3) additionally z-scores the 2 isoflux-anchor
+    coordinates (npz must contain "anchor"); order: params | x_coords | anchor.
     n optionally limits to the first n samples (scaling study: paper computes
     stats from the full train pool; keep n=None for that).
     """
@@ -37,8 +48,13 @@ def compute_stats(npz: dict, n: int | None = None) -> dict[str, np.ndarray]:
     xc = npz["x_coords"][:n]
     psi = npz["psi_total"][:n]
 
-    scalar_mean = np.concatenate([params.mean(axis=0), xc.mean(axis=0)]).astype(np.float32)
-    scalar_std = np.concatenate([params.std(axis=0), xc.std(axis=0)]).astype(np.float32)
+    extra_mean, extra_std = [xc.mean(axis=0)], [xc.std(axis=0)]
+    if use_anchor:
+        anc = npz["anchor"][:n]
+        extra_mean.append(anc.mean(axis=0))
+        extra_std.append(anc.std(axis=0))
+    scalar_mean = np.concatenate([params.mean(axis=0), *extra_mean]).astype(np.float32)
+    scalar_std = np.concatenate([params.std(axis=0), *extra_std]).astype(np.float32)
     psi_mean = float(psi.mean())
     psi_std = float(psi.std())
     return {
@@ -56,25 +72,40 @@ def _normalize_rz(R: np.ndarray, Z: np.ndarray) -> tuple[np.ndarray, np.ndarray]
 
 
 class DNFnoDataset(Dataset):
-    """9-channel field dataset; inputs are assembled on the fly per sample."""
+    """Field dataset (9/11/13 channels); inputs assembled on the fly per sample.
+
+    use_anchor=True (data_v3, xpoints+anchor mode) appends the 2 sampled
+    isoflux-anchor coordinates to the scalars -> 13 channels.
+    """
 
     def __init__(self, npz_path: str | Path, stats: dict | None = None,
-                 indices: np.ndarray | None = None):
+                 indices: np.ndarray | None = None, use_anchor: bool = False):
         self.npz_path = str(npz_path)
+        self.use_anchor = use_anchor
         with np.load(npz_path) as d:
             self.R, self.Z = _normalize_rz(d["R"], d["Z"])
             self.psi_total = d["psi_total"].astype(np.float32)      # (N, 65, 65)
-            self.params = d["params"].astype(np.float32)            # (N, 3): Ip, paxis, fvac
+            self.params = d["params"].astype(np.float32)            # (N, 3 or 5)
             self.x_coords = d["x_coords"].astype(np.float32)        # (N, 4)
             self.mask = d["mask"].astype(np.float32)
             self.dpdpsi = d["dpdpsi"].astype(np.float32)
             self.FdFdpsi = d["FdFdpsi"].astype(np.float32)
             self.axes = d["axes"].astype(np.float32)                # R_axis, Z_axis, psi_bndry, psi_axis
+            if use_anchor:
+                if "anchor" not in d.files:
+                    raise RuntimeError(
+                        "use_anchor=True but dataset has no 'anchor' field — "
+                        "regenerate with generate_dn_dataset.py --isoflux-sampling")
+                self.anchor = d["anchor"].astype(np.float32)
+            else:
+                self.anchor = None
             self.n_full = len(self.psi_total)
 
         if stats is None:  # compute stats from the full dataset (train use)
             stats = compute_stats({
-                "params": self.params, "x_coords": self.x_coords, "psi_total": self.psi_total})
+                "params": self.params, "x_coords": self.x_coords,
+                "psi_total": self.psi_total, **({"anchor": self.anchor} if use_anchor else {})},
+                use_anchor=use_anchor)
         self.stats = stats
 
         if indices is None:
@@ -91,9 +122,12 @@ class DNFnoDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         i = self.indices[idx]
-        scalars = np.concatenate([self.params[i], self.x_coords[i]])  # (n_scalars,)
-        scalars = (scalars - self.scalar_mean) / self.scalar_std
-        # broadcast the scalar channels to the grid (7 paper / 9 data_v2)
+        extra = [self.anchor[i]] if self.anchor is not None else []
+        scalars = np.concatenate([self.params[i], self.x_coords[i], *extra])  # (n_scalars,)
+        # constant channels (e.g. data_v4 anchor Z == 0 -> std == 0) map to 0
+        # instead of NaN; non-constant channels are unchanged (std >> 1e-8)
+        scalars = (scalars - self.scalar_mean) / np.maximum(self.scalar_std, 1e-8)
+        # broadcast the scalar channels to the grid (7 paper / 9 data_v2 / 11 data_v3-xa)
         scalar_fields = np.broadcast_to(scalars[:, None, None], (len(scalars),) + self.R.shape)
 
         x = np.concatenate([self.R[None], self.Z[None], scalar_fields], axis=0)  # (2+n_scalars, 65, 65)

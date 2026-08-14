@@ -104,9 +104,11 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    # input_mode is a string marker, not a stat (skip or np.float32(str) throws)
     stats = {k: (np.asarray(v, dtype=np.float32) if isinstance(v, list) else np.float32(v))
-             for k, v in ckpt["stats"].items()}
-    ds = DNFnoDataset(args.test_data, stats=stats)
+             for k, v in ckpt["stats"].items() if k != "input_mode"}
+    use_anchor = ckpt.get("input_mode", "xpoints") == "xa"
+    ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=use_anchor)
     n = min(args.n, len(ds))
 
     result = {}

@@ -193,16 +193,19 @@ def main() -> None:
 
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     stats = ckpt["stats"]
+    # input_mode is a string marker, not a stat (skip or np.float32(str) throws)
     stats = {k: (np.asarray(v, dtype=np.float32) if isinstance(v, list) else np.float32(v))
-             for k, v in stats.items()}
+             for k, v in stats.items() if k != "input_mode"}
 
-    # input channels inferred from the checkpoint stats (9 baseline / 11 data_v2)
+    # input channels inferred from the checkpoint stats (9 baseline / 11 data_v2
+    # / 13 data_v3-xa); dataset mode follows the checkpoint's input_mode
     model = build_model(in_channels=2 + len(stats["scalar_mean"])).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    ds = DNFnoDataset(args.test_data, stats=stats)
+    use_anchor = ckpt.get("input_mode", "xpoints") == "xa"
+    ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=use_anchor)
     n_eval = min(len(ds), args.max_samples) if args.max_samples else len(ds)
 
     print(f"\n{'='*70}")

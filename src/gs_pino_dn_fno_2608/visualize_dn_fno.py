@@ -84,12 +84,14 @@ def main() -> None:
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    # input_mode is a string marker, not a stat (skip or np.float32(str) throws)
     stats = {k: (np.asarray(v, dtype=np.float32) if isinstance(v, list) else np.float32(v))
-             for k, v in ckpt["stats"].items()}
+             for k, v in ckpt["stats"].items() if k != "input_mode"}
 
     with np.load(args.test_data) as d:
         R, Z = d["R"], d["Z"]
-    ds = DNFnoDataset(args.test_data, stats=stats)
+    use_anchor = ckpt.get("input_mode", "xpoints") == "xa"
+    ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=use_anchor)
     n_full = min(len(ds), args.max_samples) if args.max_samples else len(ds)
 
     # input channels inferred from the checkpoint stats (9 baseline / 11 data_v2)

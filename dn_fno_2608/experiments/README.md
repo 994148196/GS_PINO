@@ -32,6 +32,17 @@ dn_fno_2608/
    **已建立 `dn_fno_2608/data_v2/`**（2026-08-14）：唯一差异 = 剖面形状指数
    alpha_m/alpha_n 从固定 (1.0, 2.0) 改为采样 αm~U[1,2]、αn~U[1.5,2.5]，其余
    与基线完全一致；输入通道 9→11。说明见 [data_v2/README.md](../data_v2/README.md)。
+   **已建立 `dn_fno_2608/data_v3/`**（2026-08-14）：X 点抖动 ±0.02→±0.20 m +
+   isoflux 锚点固定 (1.5,0.0)→采样 R~U[1.2,1.8]×Z~U[-0.3,0.3]，规模 3000
+   （train 2000/val 500/test 500）；新增 anchor 字段；X点版输入 11 通道、
+   X点+锚点版 13 通道。
+   ⚠️ **已被 data_v4 取代并删除**（2026-08-14；isoflux 约束不可达缺陷，生成脚本
+   `scripts/run_generate_v3.sh` 保留）。
+   **已建立 `dn_fno_2608/data_v4/`**（2026-08-14）：可行区采样（X点中心
+   (1.2,±0.6)、锚点中平面 Z=0 R∈[1.35,1.65]）+ **7 项物理合理性接受约束**
+   （三角形内、四边形余量、墙内、isoflux 残差 ≤0.35、X 点偏差 ≤0.10、
+   锚点-X点距离、core 深度）+ 8 个约束诊断字段，2972/3000，isoflux 残差
+   mean 0.172/max 0.350（v3: 0.50/2.10）。说明见 [data_v4/README.md](../data_v4/README.md)。
 2. **基线**：改进实验一律与 `outputs/fno_n5000_s1`（N=5000 seed=1，test rel L2
    0.0561%，RMSE 1.50e-5 Wb）对比，写进 notes.md。
 3. **实验自包含**：一个实验目录内必须能回答"配置是什么、结果是多少、
@@ -70,3 +81,9 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 | exp002_profile_alphas | data_v2（alpha 采样）+ 11 通道（N=500） | 0.303% | 比基线 0.222% 差 1.36×，同量级可接受 |
 | exp003_coil_input_v2 | data_v2 上 coil 电流替代 X 点输入（N=500） | 0.412% | 比 exp002 差 1.36×，与 exp001 比例（1.47×）一致；GS 0.996、几何不输 |
 | (data_v2) | 新数据集：αm/αn 采样，见 data_v2/README.md | — | — |
+| (data_v3) | 新数据集：X点 ±0.20 m + 锚点采样，2998/3000（**已删除**，被 data_v4 取代；生成脚本 run_generate_v3.sh 保留） | — | — |
+| exp004_xpoints_anchor_v3 | data_v3 上 X点(11ch) vs X点+锚点(13ch)，N=500 | 31.09% / 21.72% | 仅 X 点输入不可靠（一对多 100×退化）；含锚点仍 21.7% → 当时归因数据量瓶颈（**已被 exp006 修订为约束不可达**） |
+| exp005_coil_input_v3 | data_v3 上 coil 输入（11ch），N=500 | 12.47% | coil 隐含锚点信息（优于 X点+锚点版 1.7×）；**data_v4 复测该优势不成立**（见 exp007） |
+| (data_v4) | 新数据集：可行区采样 + 7 项接受约束 + 8 个诊断字段，2972/3000，见 data_v4/README.md | — | — |
+| exp006_xpoints_anchor_v4 | data_v4 上 X点(11ch) vs X点+锚点(13ch)，N=500 | 3.38% / **0.442%** | **约束不可达是 exp004 退化主因**：A' 恢复 49× 至 data_v2 水平；A 一对多真实代价 7.7×；A' ≥ B |
+| exp007_coil_input_v4 | data_v4 上 coil 输入（11ch），N=500 | **0.499%** | coil 恢复到 data_v2 水平（25×）；与 A'（0.442%）同档、略逊；exp005 的 1.7× 优势为污染伪差 |

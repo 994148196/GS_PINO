@@ -95,7 +95,8 @@ class DNFnoDatasetCoils(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         i = self.indices[idx]
         scalars = np.concatenate([self.params[i], self.coil_currents[i]])  # (7,): data | (9,): data_v2
-        scalars = (scalars - self.scalar_mean) / self.scalar_std
+        # constant channels -> 0 instead of NaN (same guard as data_dn_fno.py)
+        scalars = (scalars - self.scalar_mean) / np.maximum(self.scalar_std, 1e-8)
         # broadcast the scalar channels to the grid (7 exp001 / 9 exp003)
         scalar_fields = np.broadcast_to(scalars[:, None, None], (len(scalars),) + self.R.shape)
 
