@@ -31,6 +31,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from gs_pino_dn_fno_2608.data_dn_fno import DNFnoDataset
+from gs_pino_dn_fno_2608.data_dn_fno_coils import DNFnoDatasetCoils
 from gs_pino_dn_fno_2608.model_dn_fno import build_model
 from gs_pino_dn_fno_2608.evaluate_dn_fno import gs_residual_ratio, geometry_metrics
 
@@ -77,6 +78,8 @@ def main() -> None:
     ap.add_argument("--out-dir", default="dn_fno_2608/outputs/report/figures")
     ap.add_argument("--max-samples", type=int, default=0)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--title", default="arXiv:2608.05555 reproduction — N=5000 FNO",
+                    help="suptitle for fig1 (dataset/experiment description)")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -90,8 +93,13 @@ def main() -> None:
 
     with np.load(args.test_data) as d:
         R, Z = d["R"], d["Z"]
-    use_anchor = ckpt.get("input_mode", "xpoints") == "xa"
-    ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=use_anchor)
+    # dataset follows the checkpoint's input_mode (coils checkpoints use the
+    # coil-variant dataset; anchor checkpoints append the anchor channels)
+    input_mode = ckpt.get("input_mode", "xpoints")
+    if input_mode == "coils":
+        ds = DNFnoDatasetCoils(args.test_data, stats=stats)
+    else:
+        ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=(input_mode == "xa"))
     n_full = min(len(ds), args.max_samples) if args.max_samples else len(ds)
 
     # input channels inferred from the checkpoint stats (9 baseline / 11 data_v2)
@@ -207,7 +215,7 @@ def main() -> None:
             f"RMSE {rows['rmse_phys'][idx]:.2e} Wb)", fontsize=10)
         ax_d.set_xlabel("R (m)")
         ax_d.set_ylabel("Z (m)")
-    fig.suptitle("arXiv:2608.05555 reproduction — N=5000 FNO, best & worst test samples\n"
+    fig.suptitle(f"{args.title} — best & worst test samples\n"
                  "white X = X-points, white circle = O-point, white contour = separatrix; "
                  "left colorbar = |Δψ|, right colorbar = shared ψ scale (both rows)",
                  fontsize=12)
@@ -293,7 +301,7 @@ def main() -> None:
         ax.set_ylabel("count")
         ax.legend(fontsize=8)
         ax.set_title(title)
-    fig.suptitle("Geometry diagnostics (N=5000 FNO, 500 test samples)", fontsize=12)
+    fig.suptitle(f"Geometry diagnostics ({args.title}, n={n_eval} test samples)", fontsize=12)
     fig.tight_layout()
     fig.savefig(out_dir / "fig3_geometry_stats.png", dpi=150)
     plt.close(fig)

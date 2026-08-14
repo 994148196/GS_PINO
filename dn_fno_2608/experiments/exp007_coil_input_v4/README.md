@@ -82,6 +82,7 @@ exp007_coil_input_v4/
 ├── README.md
 ├── notes.md
 ├── best.pt / history.json / args.json / metrics.json
+└── figures/              # fig1_best_worst_psi / fig2_field_stats / fig3_geometry_stats
 ```
 
 训练日志：`dn_fno_2608/logs/exp007_*.log`

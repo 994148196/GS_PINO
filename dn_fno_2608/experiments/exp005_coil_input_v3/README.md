@@ -89,6 +89,9 @@ exp005_coil_input_v3/
     └── samples_summary.json         # 10 样本的锚点/X点/参数/rel L2
 ```
 
+本实验无 fig1/2/3 统计图（可视化需要 data_v3/test.npz 真值，数据集已删除，
+按用户决定跳过），仅保留上述 worst_best 场对比图。
+
 图注：白色 X = X 点约束位置，品红星 = isoflux 锚点，白色实线 = 分离面。
 **注意**：worst 样本（如 idx274/idx303）的真值分离面并不经过锚点——这些是
 isoflux 约束不可达（残差 >1 core）的数据点，见 exp004 notes §5b（data_v3 已删除）。

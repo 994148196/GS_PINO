@@ -141,7 +141,7 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 exp006_xpoints_anchor_v4/
 ├── README.md
 ├── notes.md
-├── model_a11ch_xpt/      # A：best.pt / history.json / args.json / metrics.json
+├── model_a11ch_xpt/      # A：best.pt / history.json / args.json / metrics.json / figures/
 ├── model_a13ch_xa/       # A'：同上
 └── analysis/             # anchor_buckets.json（三模型分桶）
 ```

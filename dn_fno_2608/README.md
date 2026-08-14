@@ -2,7 +2,9 @@
 
 > 复现目标：*Millisecond-Scale Neural Operator Surrogates for Double-Null Free-Boundary Grad-Shafranov Equilibria*（Plamen G. Krastev, 2026，arXiv:2608.05555v1）。
 > 本目录为全部复现产物：数据、代码、训练记录、评估结果与报告。
-> 结果速览见 [outputs/report/REPORT.md](outputs/report/REPORT.md)，残差与纯数据驱动分析见 [outputs/report/ANALYSIS.md](outputs/report/ANALYSIS.md)，后续改进实验约定见 [experiments/README.md](experiments/README.md)。
+> 结果速览见 [outputs/report/REPORT.md](outputs/report/REPORT.md)，残差与纯数据驱动分析见 [outputs/report/ANALYSIS.md](outputs/report/ANALYSIS.md)。
+> **改进实验总览（exp001–exp007：数据演进、输入架构、约束可达修复）见 [EXPERIMENTS.md](EXPERIMENTS.md)**；
+> 实验目录组织约定见 [experiments/README.md](experiments/README.md)。
 
 ---
 

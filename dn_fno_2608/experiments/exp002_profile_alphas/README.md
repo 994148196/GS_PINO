@@ -90,7 +90,9 @@ exp002_profile_alphas/
 ├── best.pt         # 最优权重（in_channels=11）
 ├── history.json    # 训练曲线
 ├── args.json       # 训练参数
-└── metrics.json    # test 评估指标（全 500 样本）
+├── metrics.json    # test 评估指标（全 500 样本）
+└── figures/        # fig1_best_worst_psi / fig2_field_stats / fig3_geometry_stats
+                    #   + stats_per_sample.json（逐样本指标缓存）
 ```
 
 训练日志：`dn_fno_2608/logs/exp002_profile_alphas_n500_s1.log`

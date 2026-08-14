@@ -139,6 +139,8 @@ exp004_xpoints_anchor_v3/
 ```
 
 训练日志：`dn_fno_2608/logs/exp004_*.log`
+无 figures/：可视化需要 data_v3/test.npz 真值，数据集已删除，按用户决定跳过
+（exp005 保留旧 worst_best 图）。
 
 ## 7. 后续可做（供参考）
 
