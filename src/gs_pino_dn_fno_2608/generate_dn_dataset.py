@@ -3,12 +3,14 @@
 Solves double-null free-boundary GS equilibria with FREEGS (TestTokamak geometry)
 following the paper's data-generation config:
   - domain R in [0.1, 2.0], Z in [-2.0, 2.0], 65x65 grid, freeBoundaryHagenow
-  - profiles: ConstrainPaxisIp(paxis, Ip, fvac) (default shapes alpha_m=1, alpha_n=2)
+  - profiles: ConstrainPaxisIp(paxis, Ip, fvac) (default shapes alpha_m=1, alpha_n=2;
+    --alpha-sampling also samples the exponents: alpha_m ~ U[1,2], alpha_n ~ U[1.5,2.5])
   - params: paxis ~ U[200, 3000] Pa, Ip ~ U[5e4, 4e5] A, fvac ~ U[0.5, 3.0]
   - X-points: reference (1.1, +-0.6) m with symmetric jitter |dR|,|dZ| <= 0.02 m
   - constraints: double X-points + isoflux to fixed outboard midplane (1.5, 0.0),
     gamma=1e-12; Picard solve rtol=1e-3, maxits=50
   - acceptance: converged AND |Ip_sol - Ip_tgt|/Ip_tgt <= 10% AND >= 2 X-points
+    AND L finite AND 0 < Beta0 < 1 (profile degeneracy guard)
 
 Per-sample saved fields (float32; full set kept for the future PINO stage):
   psi_total, psi_plasma, psi_plasma_norm, psi_coils, mask,
@@ -59,6 +61,15 @@ PARAM_RANGES = {
     "fvac": (0.5, 3.0),
 }
 
+# data_v2 extension (--alpha-sampling): profile-shape exponents
+# shape(psi_n) = (1 - psi_n^alpha_m)^alpha_n; freegs checks alpha_m/alpha_n >= 0
+# (alpha_m = 0 divides by zero), literature never exceeds ~3. Narrow range
+# centred on the paper default (1.0, 2.0) keeps the solver acceptance high.
+ALPHA_RANGES = {
+    "alpha_m": (1.0, 2.0),
+    "alpha_n": (1.5, 2.5),
+}
+
 COIL_NAMES = ["P1L", "P1U", "P2L", "P2U"]
 
 # scalar fields stacked per-sample on merge
@@ -70,9 +81,16 @@ STACKED_KEYS = [
 SHARED_KEYS = ["R", "Z"]  # stored once per chunk, not stacked
 
 
-def sample_params(rng: np.random.Generator) -> dict[str, float]:
-    """Sample one equilibrium parameter vector (paper Eq. 2-4 ranges)."""
-    return {name: float(rng.uniform(*PARAM_RANGES[name])) for name in PARAM_RANGES}
+def sample_params(rng: np.random.Generator, alpha: bool = False) -> dict[str, float]:
+    """Sample one equilibrium parameter vector (paper Eq. 2-4 ranges).
+
+    alpha=True additionally samples the profile-shape exponents alpha_m/alpha_n
+    (data_v2 extension; the paper fixes them at 1.0/2.0).
+    """
+    ranges = dict(PARAM_RANGES)
+    if alpha:
+        ranges.update(ALPHA_RANGES)
+    return {name: float(rng.uniform(*ranges[name])) for name in ranges}
 
 
 def sample_xpoints(rng: np.random.Generator):
@@ -90,6 +108,9 @@ def _solve_one(args: tuple) -> dict | None:
     t0 = time.perf_counter()
 
     paxis, Ip, fvac = params["paxis"], params["Ip"], params["fvac"]
+    # data_v2: alpha exponents sampled (absent -> paper default 1.0/2.0)
+    alpha_m = params.get("alpha_m", 1.0)
+    alpha_n = params.get("alpha_n", 2.0)
     rng = np.random.default_rng(i_seed)
     lo, up = sample_xpoints(rng)
 
@@ -103,9 +124,10 @@ def _solve_one(args: tuple) -> dict | None:
             boundary=boundary.freeBoundaryHagenow,
         )
 
-        # Profile shapes fixed by the FREEGS setup (default alpha_m=1, alpha_n=2);
-        # only scalar amplitudes vary (paper: "shapes fixed by the FREEGS setup").
-        profiles = jtor.ConstrainPaxisIp(eq, paxis=paxis, Ip=Ip, fvac=fvac)
+        # Profile shapes: paper fixes alpha_m=1, alpha_n=2 ("shapes fixed by the
+        # FREEGS setup"); --alpha-sampling additionally varies the exponents.
+        profiles = jtor.ConstrainPaxisIp(eq, paxis=paxis, Ip=Ip, fvac=fvac,
+                                         alpha_m=alpha_m, alpha_n=alpha_n)
 
         constrain = control.constrain(
             xpoints=[lo, up],
@@ -123,6 +145,9 @@ def _solve_one(args: tuple) -> dict | None:
             return None
         opt, xpt = critical.find_critical(eq.R, eq.Z, eq.psi())
         if len(xpt) < MIN_XPTS:
+            return None
+        # profile degeneracy guard (e.g. extreme shapes): L finite, Beta0 in (0,1)
+        if not (np.isfinite(profiles.L) and 0.0 < profiles.Beta0 < 1.0):
             return None
 
         # ---- extract fields ----
@@ -160,7 +185,10 @@ def _solve_one(args: tuple) -> dict | None:
             "FdFdpsi": fdFdpsi.astype(np.float32),
             "greens": np.stack(greens),
             "coil_currents": np.array(coil_currents, dtype=np.float32),
-            "params": np.array([Ip, paxis, fvac], dtype=np.float32),
+            "params": np.array(
+                [Ip, paxis, fvac]
+                + ([alpha_m, alpha_n] if "alpha_m" in params else []),
+                dtype=np.float32),
             "x_coords": np.array([*lo, *up], dtype=np.float32),
             "axes": np.array([R_axis, Z_axis, psi_bndry, eq.psi_axis], dtype=np.float32),
             "L": np.array([profiles.L], dtype=np.float32),
@@ -172,14 +200,23 @@ def _solve_one(args: tuple) -> dict | None:
 
 
 def _solve_with_retry(args: tuple, max_retries: int = 5, rng: np.random.Generator | None = None) -> dict | None:
-    """Solve with param resampling on rejection (paper: 100% acceptance expected)."""
+    """Solve with full parameter resampling on rejection (paper: 100% acceptance expected).
+
+    When rng is None a per-sample deterministic generator is derived from the
+    seed (callers don't pass a shared generator to joblib workers). On rejection
+    the whole parameter vector is re-drawn (same family: alpha keys survive the
+    worker-process boundary; the CLI flag does not) — rejection is usually a
+    deterministic property of the (paxis, Ip, fvac, alpha_m, alpha_n) combo
+    (e.g. Beta0 outside (0,1)), which jitter-only retries can never fix.
+    """
     params, i_seed = args
+    if rng is None:
+        rng = np.random.default_rng(i_seed + 7_000_003)
     for attempt in range(max_retries):
         result = _solve_one((params, i_seed + attempt * 1_000_000))
         if result is not None:
             return result
-        if rng is not None:
-            params = sample_params(rng)
+        params = sample_params(rng, alpha=("alpha_m" in params))
     return None
 
 
@@ -200,7 +237,8 @@ Z_GLOBAL = None
 
 
 def generate(out_dir: str, split: str, n_samples: int, seed: int,
-             chunk_size: int, n_jobs: int) -> None:
+             chunk_size: int, n_jobs: int, alpha_sampling: bool = False,
+             max_retries: int = 5) -> None:
     """Generate one split in resumable chunks."""
     global R_GLOBAL, Z_GLOBAL
 
@@ -227,6 +265,11 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
     print(f"  DN dataset generation | split={split} | n={n_samples} | seed={seed}")
     print(f"  grid {NX}x{NY}, R [{RMIN},{RMAX}], Z [{ZMIN},{ZMAX}], chunk_size={chunk_size}")
     print(f"  X-pts (1.1,+-0.6)+-0.02 m, isoflux->{ISOFLUX_REF}, gamma={GAMMA}, maxits={MAXITS}")
+    if alpha_sampling:
+        print(f"  profile shapes: alpha_m ~ U{ALPHA_RANGES['alpha_m']}, "
+              f"alpha_n ~ U{ALPHA_RANGES['alpha_n']} (data_v2)")
+    else:
+        print("  profile shapes: alpha_m=1.0, alpha_n=2.0 fixed (paper)")
     print(f"{'='*70}")
 
     from joblib import Parallel, delayed
@@ -243,11 +286,11 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
         i0 = ci * chunk_size
         idx = range(i0, min(i0 + chunk_size, n_samples))
         # pre-sample deterministic params for this chunk
-        chunk_params = [sample_params(rng) for _ in idx]
+        chunk_params = [sample_params(rng, alpha=alpha_sampling) for _ in idx]
 
         t0 = time.perf_counter()
         results = Parallel(n_jobs=n_jobs, verbose=0)(
-            delayed(_solve_with_retry)((p, seed * 100_000 + i))
+            delayed(_solve_with_retry)((p, seed * 100_000 + i), max_retries=max_retries)
             for i, p in zip(idx, chunk_params)
         )
         dt = time.perf_counter() - t0
@@ -299,6 +342,9 @@ def merge(out_dir: str, split: str) -> None:
     print(f"    fvac:  [{p[:,2].min():.2f}, {p[:,2].max():.2f}]     (paper [0.5, 3.0])")
     x = arrays["x_coords"]
     print(f"    X-pt R: [{x[:,0].min():.3f}, {x[:,0].max():.3f}] m (paper 1.1 +- 0.02)")
+    if p.shape[1] >= 5:
+        print(f"    alpha_m: [{p[:,3].min():.3f}, {p[:,3].max():.3f}] (v2 [1.0, 2.0])")
+        print(f"    alpha_n: [{p[:,4].min():.3f}, {p[:,4].max():.3f}] (v2 [1.5, 2.5])")
 
 
 def main() -> None:
@@ -309,6 +355,12 @@ def main() -> None:
     parser.add_argument("--out-dir", default="dn_fno_2608/data")
     parser.add_argument("--chunk-size", type=int, default=500)
     parser.add_argument("--n-jobs", type=int, default=-1)
+    parser.add_argument("--alpha-sampling", action="store_true",
+                        help="sample profile-shape exponents alpha_m/alpha_n "
+                             "(data_v2; default off keeps paper shapes 1.0/2.0)")
+    parser.add_argument("--max-retries", type=int, default=5,
+                        help="solve attempts per sample with full parameter "
+                             "resampling on rejection (v2 uses 20 for 6000/6000)")
     parser.add_argument("--merge", action="store_true",
                         help="merge existing chunks of --split into a single npz")
     args = parser.parse_args()
@@ -317,7 +369,8 @@ def main() -> None:
         merge(args.out_dir, args.split)
     else:
         generate(args.out_dir, args.split, args.n_samples, args.seed,
-                 args.chunk_size, args.n_jobs)
+                 args.chunk_size, args.n_jobs, args.alpha_sampling,
+                 args.max_retries)
 
 
 if __name__ == "__main__":

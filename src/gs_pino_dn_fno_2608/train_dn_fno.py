@@ -101,7 +101,9 @@ def main() -> None:
                             num_workers=args.workers, pin_memory=True)
 
     # ---- model / optimizer / scheduler ----
-    model = build_model().to(device)
+    # input channels inferred from the scalar stats: R, Z + scalars
+    # (7 scalars -> 9 channels paper baseline; 9 scalars -> 11 channels data_v2)
+    model = build_model(in_channels=2 + len(stats["scalar_mean"])).to(device)
     n_params = model.count_params()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(

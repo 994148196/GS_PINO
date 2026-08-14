@@ -92,7 +92,8 @@ def main() -> None:
     ds = DNFnoDataset(args.test_data, stats=stats)
     n_full = min(len(ds), args.max_samples) if args.max_samples else len(ds)
 
-    model = build_model().to(device)
+    # input channels inferred from the checkpoint stats (9 baseline / 11 data_v2)
+    model = build_model(in_channels=2 + len(stats["scalar_mean"])).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 

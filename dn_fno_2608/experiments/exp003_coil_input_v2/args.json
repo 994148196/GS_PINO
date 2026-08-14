@@ -1,0 +1,19 @@
+{
+  "train_data": "dn_fno_2608/data_v2/train.npz",
+  "val_data": "dn_fno_2608/data_v2/val.npz",
+  "n_train": 500,
+  "perm_seed": 12345,
+  "seed": 1,
+  "epochs": 800,
+  "batch_size": 16,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "lr_patience": 20,
+  "lr_factor": 0.5,
+  "min_lr": 1e-05,
+  "patience": 75,
+  "workers": 0,
+  "out_dir": "dn_fno_2608/experiments/exp003_coil_input_v2",
+  "device": "cuda",
+  "n_params": 4211777
+}

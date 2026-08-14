@@ -16,6 +16,10 @@ Usage (full):
   python -m gs_pino_dn_fno_2608.train_dn_fno_coils --train-data dn_fno_2608/data/train.npz \
       --val-data dn_fno_2608/data/val.npz --n-train 500 --seed 1 \
       --out-dir dn_fno_2608/experiments/exp001_coil_input
+Usage (data_v2, 11 channels):
+  python -m gs_pino_dn_fno_2608.train_dn_fno_coils --train-data dn_fno_2608/data_v2/train.npz \
+      --val-data dn_fno_2608/data_v2/val.npz --n-train 500 --seed 1 \
+      --out-dir dn_fno_2608/experiments/exp003_coil_input_v2
 """
 from __future__ import annotations
 
@@ -74,8 +78,9 @@ def main() -> None:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
                             num_workers=args.workers, pin_memory=True)
 
-    # ---- model / optimizer / scheduler (unchanged architecture, 9 channels) ----
-    model = build_model().to(device)
+    # ---- model / optimizer / scheduler (unchanged architecture; channels
+    # inferred from stats: 9 on data/, 11 on data_v2) ----
+    model = build_model(in_channels=2 + len(stats["scalar_mean"])).to(device)
     n_params = model.count_params()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -83,9 +88,11 @@ def main() -> None:
         min_lr=args.min_lr)
     loss_fn = torch.nn.MSELoss()
 
+    n_scalars = len(stats["scalar_mean"])
     print(f"\n{'='*70}")
-    print(f"  DN-FNO exp001 (coil-current input) | n_train={args.n_train} | seed={args.seed}")
-    print(f"  input scalars: params(3) + coil currents(4)  [baseline: params(3) + X-points(4)]")
+    print(f"  DN-FNO coil-input experiment | n_train={args.n_train} | seed={args.seed}")
+    print(f"  input scalars: params({n_scalars-4}) + coil currents(4)  "
+          f"[baseline: params({n_scalars-4}) + X-points(4)]")
     print(f"  model params: {n_params} (paper: 4,770,241)")
     print(f"  lr={args.lr}, wd={args.weight_decay}, batch={args.batch_size}, "
           f"lr patience={args.lr_patience} (x{args.lr_factor}, min {args.min_lr}), "

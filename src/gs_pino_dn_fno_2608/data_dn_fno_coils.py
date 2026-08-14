@@ -2,9 +2,10 @@
 
 Baseline (arXiv:2608.05555) feeds the 4 X-point coordinates as input scalars;
 this variant replaces them with the 4 freegs control-coil currents
-(P1L/P1U/P2L/P2U, saved as `coil_currents` in the dataset), keeping the same
-9-channel structure: R, Z (linear to [-1,1]) + Paxis/Ip/fvac (z-scored) +
-4 coil currents (z-scored). The model architecture (in_channels=9) is unchanged.
+(P1L/P1U/P2L/P2U, saved as `coil_currents` in the dataset). Channel count is
+inferred from the data: 9 on the baseline data/ (3 params + 4 coils, exp001)
+and 11 on data_v2/ (5 params + 4 coils, exp003). The model architecture
+(build_model(in_channels=...)) is unchanged.
 
 The baseline modules (data_dn_fno.py / train_dn_fno.py / evaluate_dn_fno.py)
 are intentionally NOT modified; this file mirrors their structure for the
@@ -31,7 +32,7 @@ CHANNEL_NAMES_COILS = ["R", "Z", "Paxis", "Ip", "fvac",
 
 
 def compute_stats_coils(npz: dict, n: int | None = None) -> dict[str, np.ndarray]:
-    """Train-set mean/std of the 3 run params, 4 coil currents and target psi.
+    """Train-set mean/std of the run params (3 or 5), 4 coil currents and target psi.
 
     Mirrors data_dn_fno.compute_stats with coil_currents replacing x_coords.
     """
@@ -52,7 +53,7 @@ def compute_stats_coils(npz: dict, n: int | None = None) -> dict[str, np.ndarray
 
 
 class DNFnoDatasetCoils(Dataset):
-    """9-channel field dataset with coil currents as the 4 extra scalars.
+    """Field dataset with coil currents as the 4 extra scalars (9 or 11 channels).
 
     Field attributes (psi_total / mask / dpdpsi / FdFdpsi / axes) match
     DNFnoDataset so downstream evaluation code can reuse the same physics
@@ -93,11 +94,11 @@ class DNFnoDatasetCoils(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         i = self.indices[idx]
-        scalars = np.concatenate([self.params[i], self.coil_currents[i]])  # (7,)
+        scalars = np.concatenate([self.params[i], self.coil_currents[i]])  # (7,): data | (9,): data_v2
         scalars = (scalars - self.scalar_mean) / self.scalar_std
-        # broadcast the 7 scalar channels to the grid
-        scalar_fields = np.broadcast_to(scalars[:, None, None], (7,) + self.R.shape)
+        # broadcast the scalar channels to the grid (7 exp001 / 9 exp003)
+        scalar_fields = np.broadcast_to(scalars[:, None, None], (len(scalars),) + self.R.shape)
 
-        x = np.concatenate([self.R[None], self.Z[None], scalar_fields], axis=0)  # (9, 65, 65)
+        x = np.concatenate([self.R[None], self.Z[None], scalar_fields], axis=0)  # (2+n_scalars, 65, 65)
         y = (self.psi_total[i] - self.psi_mean) / self.psi_std                   # (65, 65)
         return torch.from_numpy(x.copy()), torch.from_numpy(y[None])

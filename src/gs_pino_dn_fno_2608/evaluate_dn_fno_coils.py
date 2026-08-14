@@ -42,7 +42,7 @@ def main() -> None:
     stats = {k: (np.asarray(v, dtype=np.float32) if isinstance(v, list) else np.float32(v))
              for k, v in stats.items() if k != "input_mode"}
 
-    model = build_model().to(device)
+    model = build_model(in_channels=2 + len(stats["scalar_mean"])).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -51,7 +51,7 @@ def main() -> None:
     n_eval = min(len(ds), args.max_samples) if args.max_samples else len(ds)
 
     print(f"\n{'='*70}")
-    print(f"  DN-FNO exp001 (coil-current input) evaluation | test: {n_eval} | device: {device}")
+    print(f"  DN-FNO coil-input evaluation | test: {n_eval} | device: {device}")
     print(f"  checkpoint: {args.checkpoint}")
     print(f"  best val rel L2: {ckpt['best_val_rel_l2']*100:.4f}% @ epoch {ckpt['best_epoch']}")
     print(f"  model params: {n_params}")
@@ -112,9 +112,13 @@ def main() -> None:
                         "ratio_pred_true": float(np.nanmean(rp) / (np.nanmean(rt) + 1e-30))},
         "geometry": {k: stats_dict(np.array(v)) for k, v in geo_all.items()},
     }
-    # baseline reference: N=500 seed 1 (same train subset size, X-point input)
+    # reference: N=500 seed 1, same train-subset size, X-point input
+    # (baseline = old data/, exp002 = data_v2 — pick per test data)
     metrics["baseline_reference_n500_s1"] = {
         "rel_l2_pct_mean": 0.222, "rel_l2_pct_std": 0.007, "rmse_phys_Wb": 5.726e-5,
+    }
+    metrics["exp002_reference_dv2_n500_s1"] = {
+        "rel_l2_pct_mean": 0.303, "rel_l2_pct_std": 0.227, "rmse_phys_Wb": 8.23e-5,
     }
 
     print("\n  ---- field-level ----")

@@ -91,12 +91,12 @@ class DNFnoDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         i = self.indices[idx]
-        scalars = np.concatenate([self.params[i], self.x_coords[i]])  # (7,)
+        scalars = np.concatenate([self.params[i], self.x_coords[i]])  # (n_scalars,)
         scalars = (scalars - self.scalar_mean) / self.scalar_std
-        # broadcast the 7 scalar channels to the grid
-        scalar_fields = np.broadcast_to(scalars[:, None, None], (7,) + self.R.shape)
+        # broadcast the scalar channels to the grid (7 paper / 9 data_v2)
+        scalar_fields = np.broadcast_to(scalars[:, None, None], (len(scalars),) + self.R.shape)
 
-        x = np.concatenate([self.R[None], self.Z[None], scalar_fields], axis=0)  # (9, 65, 65)
+        x = np.concatenate([self.R[None], self.Z[None], scalar_fields], axis=0)  # (2+n_scalars, 65, 65)
         y = (self.psi_total[i] - self.psi_mean) / self.psi_std                   # (65, 65)
         return torch.from_numpy(x.copy()), torch.from_numpy(y[None])
 

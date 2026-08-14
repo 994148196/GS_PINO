@@ -112,8 +112,9 @@ def main() -> None:
     result = {}
 
     # FNO GPU
+    in_channels = 2 + len(stats["scalar_mean"])  # 9 baseline / 11 data_v2
     if torch.cuda.is_available():
-        model = build_model().cuda()
+        model = build_model(in_channels=in_channels).cuda()
         model.load_state_dict(ckpt["model_state"])
         gpu_times = bench_model(model, ds, "cuda", n)
         result["fno_gpu_ms"] = {
@@ -124,7 +125,7 @@ def main() -> None:
         print("no CUDA device, skipping GPU bench")
 
     # FNO CPU
-    model = build_model().cpu()
+    model = build_model(in_channels=in_channels).cpu()
     model.load_state_dict(ckpt["model_state"])
     cpu_times = bench_model(model, ds, "cpu", n)
     result["fno_cpu_ms"] = {

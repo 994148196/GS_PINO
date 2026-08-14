@@ -14,6 +14,9 @@
 
 ## 2. 数据集
 
+> 基线数据说明见 [data/README.md](data/README.md)；扩展版（alpha_m/alpha_n 采样，
+> 11 通道输入）见 [data_v2/README.md](data_v2/README.md)。
+
 ### 2.1 参数空间（论文 Eq. 4）
 
 | 参数 | 范围 / 分布 |

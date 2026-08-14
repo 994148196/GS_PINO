@@ -29,6 +29,9 @@ dn_fno_2608/
 
 1. **数据只读共享**：所有实验直接用 `dn_fno_2608/data/*.npz`。若要换数据
    （新参数范围、新分辨率），新建 `data_v2/` 并记录差异，不覆盖原数据。
+   **已建立 `dn_fno_2608/data_v2/`**（2026-08-14）：唯一差异 = 剖面形状指数
+   alpha_m/alpha_n 从固定 (1.0, 2.0) 改为采样 αm~U[1,2]、αn~U[1.5,2.5]，其余
+   与基线完全一致；输入通道 9→11。说明见 [data_v2/README.md](../data_v2/README.md)。
 2. **基线**：改进实验一律与 `outputs/fno_n5000_s1`（N=5000 seed=1，test rel L2
    0.0561%，RMSE 1.50e-5 Wb）对比，写进 notes.md。
 3. **实验自包含**：一个实验目录内必须能回答"配置是什么、结果是多少、
@@ -63,3 +66,7 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 | 实验 | 内容 | test rel L2 | 结论 |
 |---|---|---|---|
 | (基线) outputs/fno_n5000_s1 | 论文复现 FNO | 0.0561% | 论文 0.061%（3-seed 均值） |
+| exp001_coil_input | coil 电流替代 X 点输入（N=500） | 0.326% | 可行但比基线差 1.5× |
+| exp002_profile_alphas | data_v2（alpha 采样）+ 11 通道（N=500） | 0.303% | 比基线 0.222% 差 1.36×，同量级可接受 |
+| exp003_coil_input_v2 | data_v2 上 coil 电流替代 X 点输入（N=500） | 0.412% | 比 exp002 差 1.36×，与 exp001 比例（1.47×）一致；GS 0.996、几何不输 |
+| (data_v2) | 新数据集：αm/αn 采样，见 data_v2/README.md | — | — |

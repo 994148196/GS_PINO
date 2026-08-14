@@ -11,10 +11,14 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-data/
 outputs/
 paper/
 .trae/
 .vscode/
 Cerfon_Solovev-*.pdf
 *.log
+/data/
+dn_fno_2608/data/**
+!dn_fno_2608/data/README.md
+dn_fno_2608/data_v2/**
+!dn_fno_2608/data_v2/README.md

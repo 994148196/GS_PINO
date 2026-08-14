@@ -196,7 +196,8 @@ def main() -> None:
     stats = {k: (np.asarray(v, dtype=np.float32) if isinstance(v, list) else np.float32(v))
              for k, v in stats.items()}
 
-    model = build_model().to(device)
+    # input channels inferred from the checkpoint stats (9 baseline / 11 data_v2)
+    model = build_model(in_channels=2 + len(stats["scalar_mean"])).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
