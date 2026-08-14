@@ -19,7 +19,7 @@ for N in 500 1000 2000 5000; do
     continue
   fi
   echo "=== N=$N seed=$S ==="
-  "$PY" -u -m gs_pino.train_dn_fno \
+  "$PY" -u -m gs_pino_dn_fno_2608.train_dn_fno \
     --train-data "$TRAIN" --val-data "$VAL" \
     --n-train "$N" --seed "$S" \
     --out-dir "$OUT/fno_n${N}_s${S}" 2>&1 | tee "dn_fno_2608/logs/train_n${N}_s${S}.log"

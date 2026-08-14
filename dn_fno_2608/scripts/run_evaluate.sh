@@ -13,7 +13,7 @@ for N in 500 1000 2000 5000; do
     CKPT="$OUT/fno_n${N}_s${S}/best.pt"
     if [ -f "$CKPT" ]; then
       echo "=== evaluate N=$N seed=$S ==="
-      "$PY" -u -m gs_pino.evaluate_dn_fno --test-data "$TEST" --checkpoint "$CKPT" \
+      "$PY" -u -m gs_pino_dn_fno_2608.evaluate_dn_fno --test-data "$TEST" --checkpoint "$CKPT" \
         --out-dir "$REPORT/n${N}_s${S}" 2>&1 | tail -30
     else
       echo "skip N=$N seed=$S (no checkpoint)"
@@ -24,7 +24,7 @@ done
 echo "=== latency: best model (N=5000 seed=1, if present) ==="
 CKPT="$OUT/fno_n5000_s1/best.pt"
 if [ -f "$CKPT" ]; then
-  "$PY" -u -m gs_pino.latency_dn_fno --test-data "$TEST" --checkpoint "$CKPT" \
+  "$PY" -u -m gs_pino_dn_fno_2608.latency_dn_fno --test-data "$TEST" --checkpoint "$CKPT" \
     --out-dir "$REPORT" 2>&1 | tail -20
 fi
 echo "=== evaluation done ==="

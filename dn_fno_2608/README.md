@@ -142,13 +142,13 @@ X 点抖动幅度小是论文原文设定（Eq. 4），数据流形由 7 个标�
 PY="C:/Users/HP/.conda/envs/torch5060/python.exe"   # 本项目环境
 
 # ── 数据生成（分块 + 断点续跑 + 合并）──
-"$PY" -m gs_pino.generate_dn_dataset --split train --n-samples 5000 --seed 123 \
+"$PY" -m gs_pino_dn_fno_2608.generate_dn_dataset --split train --n-samples 5000 --seed 123 \
       --out-dir dn_fno_2608/data --chunk-size 500 --n-jobs 24 --merge
 #   参数: --split {train,val,test}  --n-samples  --seed 123/456/789
 #         --out-dir  --chunk-size  --n-jobs     --merge（合并分块为 npz）
 
 # ── 训练 ──
-"$PY" -u -m gs_pino.train_dn_fno \
+"$PY" -u -m gs_pino_dn_fno_2608.train_dn_fno \
       --train-data dn_fno_2608/data/train.npz --val-data dn_fno_2608/data/val.npz \
       --n-train 5000 --seed 1 --out-dir dn_fno_2608/outputs/fno_n5000_s1
 #   参数: --n-train 5000  --perm-seed 12345（嵌套子集置换）  --seed
@@ -158,7 +158,7 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"   # 本项目环境
 #   产物: best.pt（model_state + stats 归一化统计量 + args）、history.json、args.json
 
 # ── 评估（场级 + 几何 + GS 残差）──
-"$PY" -u -m gs_pino.evaluate_dn_fno \
+"$PY" -u -m gs_pino_dn_fno_2608.evaluate_dn_fno \
       --test-data dn_fno_2608/data/test.npz \
       --checkpoint dn_fno_2608/outputs/fno_n5000_s1/best.pt \
       --out-dir dn_fno_2608/outputs/report/n5000_s1
@@ -166,7 +166,7 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"   # 本项目环境
 #   产物: metrics.json（rel L2 / RMSE / 几何 / GS 残差 / find_critical 统计）
 
 # ── 可视化（fig1 好坏样本对比 / fig2 场统计 / fig3 几何统计）──
-"$PY" -u -m gs_pino.visualize_dn_fno \
+"$PY" -u -m gs_pino_dn_fno_2608.visualize_dn_fno \
       --checkpoint dn_fno_2608/outputs/fno_n5000_s1/best.pt \
       --out-dir dn_fno_2608/outputs/report/figures
 #   参数: --test-data  --max-samples  --device
@@ -174,7 +174,7 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"   # 本项目环境
 #         stats_per_sample.json（逐样本指标缓存，重画图秒级复用）
 
 # ── 延迟基准（GPU/CPU 前向 + freegs 对照）──
-"$PY" -u -m gs_pino.latency_dn_fno \
+"$PY" -u -m gs_pino_dn_fno_2608.latency_dn_fno \
       --test-data dn_fno_2608/data/test.npz \
       --checkpoint dn_fno_2608/outputs/fno_n5000_s1/best.pt \
       --out-dir dn_fno_2608/outputs/report

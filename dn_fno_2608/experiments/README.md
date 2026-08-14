@@ -32,7 +32,7 @@ dn_fno_2608/
 2. **基线**：改进实验一律与 `outputs/fno_n5000_s1`（N=5000 seed=1，test rel L2
    0.0561%，RMSE 1.50e-5 Wb）对比，写进 notes.md。
 3. **实验自包含**：一个实验目录内必须能回答"配置是什么、结果是多少、
-   对比基线如何"。训练脚本（`gs_pino.train_dn_fno`）已支持 `--out-dir` 直接
+   对比基线如何"。训练脚本（`gs_pino_dn_fno_2608.train_dn_fno`）已支持 `--out-dir` 直接
    指向 `experiments/expXXX_.../`。
 4. **命名**：`exp001_<slug>` 递增（如 exp001_gelu→relu、exp002_physics_loss）。
 5. **代码**：公共代码在 `src/gs_pino/`（data_dn_fno / model_dn_fno /
@@ -44,16 +44,16 @@ dn_fno_2608/
 
 ```bash
 PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
-"$PY" -u -m gs_pino.train_dn_fno \
+"$PY" -u -m gs_pino_dn_fno_2608.train_dn_fno \
   --train-data dn_fno_2608/data/train.npz --val-data dn_fno_2608/data/val.npz \
   --n-train 5000 --seed 1 \
   --out-dir dn_fno_2608/experiments/exp001_xxx \
   2>&1 | tee dn_fno_2608/logs/exp001_xxx.log
-"$PY" -u -m gs_pino.evaluate_dn_fno \
+"$PY" -u -m gs_pino_dn_fno_2608.evaluate_dn_fno \
   --test-data dn_fno_2608/data/test.npz \
   --checkpoint dn_fno_2608/experiments/exp001_xxx/best.pt \
   --out-dir dn_fno_2608/experiments/exp001_xxx
-"$PY" -u -m gs_pino.visualize_dn_fno \
+"$PY" -u -m gs_pino_dn_fno_2608.visualize_dn_fno \
   --checkpoint dn_fno_2608/experiments/exp001_xxx/best.pt \
   --out-dir dn_fno_2608/experiments/exp001_xxx/figures
 ```
