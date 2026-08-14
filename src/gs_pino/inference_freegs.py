@@ -18,21 +18,44 @@ from .models import PlaNetCore, UFNO2d_v2
 
 def compute_greens(tokamak, R, Z):
     """Compute Green functions for all control coils.
-    
+
+    Important: the training data was generated on freegs' native grid
+    (2^n + 1 = 65 points) and then quintic-interpolated down to 64x64
+    (see data_freegs._preload_data). Green's function has steep gradients
+    near the coil centers, so evaluating it directly on the 64x64 grid would
+    NOT reproduce the training psi_coils (measured max diff ~0.1 vs the
+    stored fields). We reproduce the exact training preprocessing here:
+    greens are computed at 65x65 and interpolated to the target grid.
+
     Args:
         tokamak: freegs tokamak object
-        R: 2D array of major radius coordinates
-        Z: 2D array of height coordinates
-        
+        R: 2D array of major radius coordinates [nx, ny]
+        Z: 2D array of height coordinates [nx, ny]
+
     Returns:
         greens: [n_coils, nx, ny] array of Green functions
         coil_names: list of coil names
     """
+    from .data_freegs import interp_fun
+
+    nr, nz = R.shape
+    if nr == nz == 64:  # training grid: greens must come from the 65x65 freegs grid
+        r1 = np.linspace(R[0, 0], R[-1, -1], nr + 1)
+        z1 = np.linspace(Z[0, 0], Z[-1, -1], nz + 1)
+        R65, Z65 = np.meshgrid(r1, z1, indexing="ij")
+        interp = True
+    else:  # any other grid (e.g. freegs-native 65x65): use it directly
+        R65, Z65 = R, Z
+        interp = False
+
     greens = []
     coil_names = []
     for label, coil in tokamak.coils:
         if coil.control:
-            greens.append(coil.createPsiGreens(R, Z).astype(np.float32))
+            g = coil.createPsiGreens(R65, Z65).astype(np.float32)
+            if interp:
+                g = interp_fun(g, R65, Z65, R, Z).astype(np.float32)
+            greens.append(g)
             coil_names.append(label)
     return np.stack(greens), coil_names
 
@@ -133,6 +156,11 @@ def main() -> None:
     parser.add_argument("--coil-currents", type=float, nargs=4, required=True, help="4 coil currents.")
     parser.add_argument("--params", type=float, nargs=5, required=True, help="5 plasma params: Ip paxis alpha_m alpha_n fvac.")
     parser.add_argument("--output", help="Output .npz path for predictions.")
+    parser.add_argument("--screening", action="store_true",
+                        help="Run physics-based quality checks on the prediction "
+                             "(uses screening_thresholds.json next to the checkpoint if present).")
+    parser.add_argument("--strict", action="store_true",
+                        help="With --screening, exit code 1 if any check FAILs.")
     args = parser.parse_args()
 
     try:
@@ -146,8 +174,15 @@ def main() -> None:
     params_config = checkpoint["args"]
     param_norm = Normalization(checkpoint["param_mean"], checkpoint["param_std"])
 
-    R = np.linspace(args.R[0], args.R[1], args.nx)
-    Z = np.linspace(args.Z[0], args.Z[1], args.ny)
+    # The model is trained on the checkpoint's grid resolution (64x64);
+    # --nx/--ny must match it or the prediction is meaningless.
+    nr = checkpoint["nr"]
+    nz = checkpoint["nz"]
+    if args.nx != nr or args.ny != nz:
+        print(f"[warning] --nx/--ny ({args.nx}x{args.ny}) != checkpoint grid "
+              f"({nr}x{nz}); using checkpoint grid.")
+    R = np.linspace(args.R[0], args.R[1], nr)
+    Z = np.linspace(args.Z[0], args.Z[1], nz)
     R_grid, Z_grid = np.meshgrid(R, Z, indexing="ij")
 
     tokamak = freegs.machine.TestTokamak()
@@ -158,8 +193,6 @@ def main() -> None:
 
     model_type = params_config.get("model", "planet")
     n_measures = checkpoint.get("n_measures", 9)
-    nr = checkpoint.get("nr", args.nx)
-    nz = checkpoint.get("nz", args.ny)
     predict_plasma = checkpoint.get("predict_plasma", False)
 
     if model_type == "planet":
@@ -213,6 +246,44 @@ def main() -> None:
             coil_names=np.array(coil_names),
         )
         print(f"\nPredictions saved to: {args.output}")
+
+    if args.screening:
+        from .screening import CheckThresholds, format_report, screen_prediction
+
+        thresholds = CheckThresholds()
+        th_path = Path(args.checkpoint).parent / "screening_thresholds.json"
+        if th_path.exists():
+            import json
+
+            th = json.loads(th_path.read_text())["thresholds"]
+            thresholds = CheckThresholds(
+                gs_residual=[th["gs_residual"]["warn"], th["gs_residual"]["fail"]],
+                boundary_ratio=[th["boundary_ratio"]["warn"], th["boundary_ratio"]["fail"]],
+                max_z=[th["max_z"]["warn"], th["max_z"]["fail"]],
+            )
+        else:
+            print("\n[warning] screening_thresholds.json not found next to the "
+                  "checkpoint; using no-threshold defaults (run "
+                  "`python -m gs_pino.screening --checkpoint ... --calibrate` first).")
+
+        measures_raw = np.concatenate([coil_currents, plasma_params]).astype(np.float64)
+        screen = screen_prediction(
+            psi_plasma=result["psi_plasma"],
+            psi_coils=result["psi_coils"],
+            R=R_grid, Z=Z_grid,
+            measures_raw=measures_raw,
+            param_mean=checkpoint["param_mean"],
+            param_std=checkpoint["param_std"],
+            params={
+                "Ip": plasma_params[0], "paxis": plasma_params[1],
+                "alpha_m": plasma_params[2], "alpha_n": plasma_params[3],
+                "fvac": plasma_params[4],
+            },
+            thresholds=thresholds,
+        )
+        print("\n" + format_report(screen))
+        if args.strict and screen["overall"] != "PASS":
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":
