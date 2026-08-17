@@ -87,3 +87,6 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 | (data_v4) | 新数据集：可行区采样 + 7 项接受约束 + 8 个诊断字段，2972/3000，见 data_v4/README.md | — | — |
 | exp006_xpoints_anchor_v4 | data_v4 上 X点(11ch) vs X点+锚点(13ch)，N=500 | 3.38% / **0.442%** | **约束不可达是 exp004 退化主因**：A' 恢复 49× 至 data_v2 水平；A 一对多真实代价 7.7×；A' ≥ B |
 | exp007_coil_input_v4 | data_v4 上 coil 输入（11ch），N=500 | **0.499%** | coil 恢复到 data_v2 水平（25×）；与 A'（0.442%）同档、略逊；exp005 的 1.7× 优势为污染伪差 |
+| (data_v5) | 新数据集：MAST 真实装置 + 混合位形 DN/SN 分开落盘（各 3000，500/500 全接受），config 字段（0/1），见 data_v5/README.md | — | — |
+| exp008_mixed_configs | data_v5 混合训练（DN+SN 拼接 + config 1ch，14ch），N=500 | DN桶 0.667% / SN桶 1.203% / 整体 0.935% | **混合训练可行**：两桶都健康（GS 0.986、find_critical 0/1000）；代价 +26~35% vs 专职；config 通道有效利用（专职跨配置外推崩溃见 exp009） |
+| exp009_split_configs | data_v5 专职单一位形（DN-only / SN-only，13ch），N=500 | DN 0.492% / SN 0.953% | 专职自身最优；**跨配置外推崩溃**（DN→SN 253%、SN→DN 4.0e8%）——单一位形训练无跨位形泛化，混合训练是必要条件 |

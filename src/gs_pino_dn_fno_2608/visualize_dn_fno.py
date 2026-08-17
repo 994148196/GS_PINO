@@ -87,9 +87,10 @@ def main() -> None:
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    # input_mode is a string marker, not a stat (skip or np.float32(str) throws)
+    # input_mode is a string marker, config_input a bool — neither is a stat
+    # (np.float32(str) throws; np.float32(bool) silently pollutes the scalars)
     stats = {k: (np.asarray(v, dtype=np.float32) if isinstance(v, list) else np.float32(v))
-             for k, v in ckpt["stats"].items() if k != "input_mode"}
+             for k, v in ckpt["stats"].items() if k not in ("input_mode", "config_input")}
 
     with np.load(args.test_data) as d:
         R, Z = d["R"], d["Z"]
@@ -99,7 +100,8 @@ def main() -> None:
     if input_mode == "coils":
         ds = DNFnoDatasetCoils(args.test_data, stats=stats)
     else:
-        ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=(input_mode == "xa"))
+        ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=(input_mode == "xa"),
+                          use_config=bool(ckpt.get("config_input", False)))
     n_full = min(len(ds), args.max_samples) if args.max_samples else len(ds)
 
     # input channels inferred from the checkpoint stats (9 baseline / 11 data_v2)

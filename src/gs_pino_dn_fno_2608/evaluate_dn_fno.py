@@ -193,19 +193,23 @@ def main() -> None:
 
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     stats = ckpt["stats"]
-    # input_mode is a string marker, not a stat (skip or np.float32(str) throws)
+    # input_mode is a string marker, config_input a bool — neither is a stat
+    # (np.float32(str) throws; np.float32(bool) silently pollutes the scalars)
     stats = {k: (np.asarray(v, dtype=np.float32) if isinstance(v, list) else np.float32(v))
-             for k, v in stats.items() if k != "input_mode"}
+             for k, v in stats.items() if k not in ("input_mode", "config_input")}
 
     # input channels inferred from the checkpoint stats (9 baseline / 11 data_v2
-    # / 13 data_v3-xa); dataset mode follows the checkpoint's input_mode
+    # / 13 data_v3-xa / 14 data_v5-mixed-xa); dataset mode follows the
+    # checkpoint's input_mode / config_input
     model = build_model(in_channels=2 + len(stats["scalar_mean"])).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     use_anchor = ckpt.get("input_mode", "xpoints") == "xa"
-    ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=use_anchor)
+    use_config = bool(ckpt.get("config_input", False))
+    ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=use_anchor,
+                      use_config=use_config)
     n_eval = min(len(ds), args.max_samples) if args.max_samples else len(ds)
 
     print(f"\n{'='*70}")
@@ -216,8 +220,10 @@ def main() -> None:
     print(f"{'='*70}")
 
     # physical grid (meters) — needed by lap_star / RHS / find_critical;
-    # ds.R/Z are the [-1,1]-normalized model input channels, not usable here
-    with np.load(args.test_data) as d:
+    # ds.R/Z are the [-1,1]-normalized model input channels, not usable here.
+    # --test-data may be a comma-separated list (mixed-config eval); all files
+    # share the grid (data_v5 dn/sn are both MAST 65x65) — take the first.
+    with np.load(args.test_data.split(",")[0].strip()) as d:
         R, Z = d["R"], d["Z"]
 
     rel_l2s, rmse_phys, residuals_pred, residuals_true = [], [], [], []

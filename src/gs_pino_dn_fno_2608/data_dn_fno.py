@@ -36,11 +36,16 @@ CHANNEL_NAMES_XA = CHANNEL_NAMES + ["R_anc", "Z_anc"]
 
 
 def compute_stats(npz: dict, n: int | None = None,
-                  use_anchor: bool = False) -> dict[str, np.ndarray]:
+                  use_anchor: bool = False,
+                  use_config: bool = False) -> dict[str, np.ndarray]:
     """Train-set mean/std of the run params, 4 X-point coords and target psi.
 
     use_anchor=True (data_v3) additionally z-scores the 2 isoflux-anchor
-    coordinates (npz must contain "anchor"); order: params | x_coords | anchor.
+    coordinates (npz must contain "anchor").
+    use_config=True (data_v5) appends the 1-channel config code (0=DN, 1=SN,
+    npz must contain "config").
+    Scalar order: params | x_coords | [anchor] | [config] — must match
+    DNFnoDataset.__getitem__.
     n optionally limits to the first n samples (scaling study: paper computes
     stats from the full train pool; keep n=None for that).
     """
@@ -53,6 +58,10 @@ def compute_stats(npz: dict, n: int | None = None,
         anc = npz["anchor"][:n]
         extra_mean.append(anc.mean(axis=0))
         extra_std.append(anc.std(axis=0))
+    if use_config:
+        cfg_arr = npz["config"][:n]
+        extra_mean.append(cfg_arr.mean(axis=0))
+        extra_std.append(cfg_arr.std(axis=0))
     scalar_mean = np.concatenate([params.mean(axis=0), *extra_mean]).astype(np.float32)
     scalar_std = np.concatenate([params.std(axis=0), *extra_std]).astype(np.float32)
     psi_mean = float(psi.mean())
@@ -72,40 +81,75 @@ def _normalize_rz(R: np.ndarray, Z: np.ndarray) -> tuple[np.ndarray, np.ndarray]
 
 
 class DNFnoDataset(Dataset):
-    """Field dataset (9/11/13 channels); inputs assembled on the fly per sample.
+    """Field dataset (9/11/13/14 channels); inputs assembled on the fly per sample.
 
     use_anchor=True (data_v3, xpoints+anchor mode) appends the 2 sampled
     isoflux-anchor coordinates to the scalars -> 13 channels.
+    use_config=True (data_v5, mixed-config mode) appends the 1-channel config
+    code (0=DN, 1=SN) -> 14 channels (with anchor); SN samples keep a (0,0)
+    upper-X-point placeholder (constant channel -> z-scored 0, disambiguated
+    by the config channel).
+
+    npz_path may be a comma-separated list of files (mixed-config training):
+    rows are concatenated per field; R/Z are taken from the first file (all
+    files must share the grid — data_v5 dn/sn are both MAST 65x65).
     """
 
-    def __init__(self, npz_path: str | Path, stats: dict | None = None,
-                 indices: np.ndarray | None = None, use_anchor: bool = False):
+    def __init__(self, npz_path: str | Path | list, stats: dict | None = None,
+                 indices: np.ndarray | None = None, use_anchor: bool = False,
+                 use_config: bool = False):
         self.npz_path = str(npz_path)
         self.use_anchor = use_anchor
-        with np.load(npz_path) as d:
-            self.R, self.Z = _normalize_rz(d["R"], d["Z"])
-            self.psi_total = d["psi_total"].astype(np.float32)      # (N, 65, 65)
-            self.params = d["params"].astype(np.float32)            # (N, 3 or 5)
-            self.x_coords = d["x_coords"].astype(np.float32)        # (N, 4)
-            self.mask = d["mask"].astype(np.float32)
-            self.dpdpsi = d["dpdpsi"].astype(np.float32)
-            self.FdFdpsi = d["FdFdpsi"].astype(np.float32)
-            self.axes = d["axes"].astype(np.float32)                # R_axis, Z_axis, psi_bndry, psi_axis
-            if use_anchor:
+        self.use_config = use_config
+        paths = [p.strip() for p in npz_path.split(",") if p.strip()] \
+            if isinstance(npz_path, str) else [str(p) for p in npz_path]
+
+        def _load_many(key: str) -> np.ndarray:
+            first = True
+            parts = []
+            for p in paths:
+                with np.load(p) as d:
+                    if key in ("R", "Z"):
+                        if first:
+                            parts.append(d[key])
+                    else:
+                        parts.append(d[key])
+                first = False
+            return parts[0] if key in ("R", "Z") else np.concatenate(parts, axis=0)
+
+        self.R, self.Z = _normalize_rz(_load_many("R"), _load_many("Z"))
+        self.psi_total = _load_many("psi_total").astype(np.float32)   # (N, 65, 65)
+        self.params = _load_many("params").astype(np.float32)         # (N, 3 or 5)
+        self.x_coords = _load_many("x_coords").astype(np.float32)     # (N, 4)
+        self.mask = _load_many("mask").astype(np.float32)
+        self.dpdpsi = _load_many("dpdpsi").astype(np.float32)
+        self.FdFdpsi = _load_many("FdFdpsi").astype(np.float32)
+        self.axes = _load_many("axes").astype(np.float32)             # R_axis, Z_axis, psi_bndry, psi_axis
+        self.anchor = None
+        if use_anchor:
+            with np.load(paths[0]) as d:
                 if "anchor" not in d.files:
                     raise RuntimeError(
                         "use_anchor=True but dataset has no 'anchor' field — "
                         "regenerate with generate_dn_dataset.py --isoflux-sampling")
-                self.anchor = d["anchor"].astype(np.float32)
-            else:
-                self.anchor = None
-            self.n_full = len(self.psi_total)
+            self.anchor = _load_many("anchor").astype(np.float32)
+        self.config = None
+        if use_config:
+            with np.load(paths[0]) as d:
+                if "config" not in d.files:
+                    raise RuntimeError(
+                        "use_config=True but dataset has no 'config' field — "
+                        "regenerate with generate_dn_dataset.py (data_v5)")
+            self.config = _load_many("config").astype(np.float32)
+        self.n_full = len(self.psi_total)
 
         if stats is None:  # compute stats from the full dataset (train use)
             stats = compute_stats({
                 "params": self.params, "x_coords": self.x_coords,
-                "psi_total": self.psi_total, **({"anchor": self.anchor} if use_anchor else {})},
-                use_anchor=use_anchor)
+                "psi_total": self.psi_total,
+                **({"anchor": self.anchor} if use_anchor else {}),
+                **({"config": self.config} if use_config else {})},
+                use_anchor=use_anchor, use_config=use_config)
         self.stats = stats
 
         if indices is None:
@@ -122,7 +166,11 @@ class DNFnoDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         i = self.indices[idx]
-        extra = [self.anchor[i]] if self.anchor is not None else []
+        extra = []
+        if self.anchor is not None:
+            extra.append(self.anchor[i])
+        if self.config is not None:
+            extra.append(self.config[i])
         scalars = np.concatenate([self.params[i], self.x_coords[i], *extra])  # (n_scalars,)
         # constant channels (e.g. data_v4 anchor Z == 0 -> std == 0) map to 0
         # instead of NaN; non-constant channels are unchanged (std >> 1e-8)

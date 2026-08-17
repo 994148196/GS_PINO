@@ -104,6 +104,35 @@ PARAM_RANGES = {
     "fvac": (0.5, 3.0),
 }
 
+# data_v5 (--machine mast): MAST parameter ranges (probe-verified feasible
+# band; 03-mast.py uses paxis 3 kPa / Ip 0.7 MA / fvac 0.4)
+MAST_PARAM_RANGES = {
+    "paxis": (1e3, 5e3),          # Pa
+    "Ip": (3e5, 8e5),             # A
+    "fvac": (0.3, 0.8),
+}
+MAST_ANCHOR_R_RANGE = (1.2, 1.6)  # midplane anchor R (MAST outer midplane)
+
+# ---- data_v5: machine x configuration registry ----
+# Extension points for v6 (not implemented in v5, see PLAN_v5_mixed_configs.md):
+#   ("mastu_simple", "snow"): snowflake — needs the freegs_snow fork backend
+#       (second-order constraints; solve maxits=200 / rtol=5e-3, probe-verified)
+#   ("diiid", "limiter"): limiter — the egg's check_limited flow does not
+#       converge (official 12-limited.py config replicated: 0/20), needs
+#       dedicated debugging or a fixed-boundary approximation
+MACHINE_FACTORIES = {
+    "test": lambda: freegs.machine.TestTokamak(),
+    "mast": lambda: freegs.machine.MAST(),
+}
+CONFIG_SPECS = {
+    ("test", "dn"): {},   # defaults = paper/data_v4 behaviour
+    ("test", "sn"): {"xpt_n": 1},
+    ("mast", "dn"): {"xpt_n": 2, "has_wall": False, "param_ranges": MAST_PARAM_RANGES,
+                     "anchor_r_range": MAST_ANCHOR_R_RANGE, "xpt_r0": 0.7, "xpt_z0": 1.1},
+    ("mast", "sn"): {"xpt_n": 1, "has_wall": False, "param_ranges": MAST_PARAM_RANGES,
+                     "anchor_r_range": MAST_ANCHOR_R_RANGE, "xpt_r0": 0.7, "xpt_z0": 1.1},
+}
+
 # data_v2 extension (--alpha-sampling): profile-shape exponents
 # shape(psi_n) = (1 - psi_n^alpha_m)^alpha_n; freegs checks alpha_m/alpha_n >= 0
 # (alpha_m = 0 divides by zero), literature never exceeds ~3. Narrow range
@@ -121,20 +150,22 @@ COIL_NAMES = ["P1L", "P1U", "P2L", "P2U"]
 STACKED_KEYS = [
     "psi_total", "psi_plasma", "psi_plasma_norm", "psi_coils", "mask",
     "dpdpsi", "FdFdpsi", "greens", "coil_currents", "params", "x_coords",
-    "axes", "L", "Beta0", "solve_time", "anchor",
+    "axes", "L", "Beta0", "solve_time", "anchor", "config",
     "xpts_actual", "o_point", "xpt_constraint_res", "isoflux_res",
     "psi_at_constraints", "n_iter", "psi_relchange_final",
 ]
 SHARED_KEYS = ["R", "Z"]  # stored once per chunk, not stacked
 
 
-def sample_params(rng: np.random.Generator, alpha: bool = False) -> dict[str, float]:
+def sample_params(rng: np.random.Generator, alpha: bool = False,
+                  ranges: dict | None = None) -> dict[str, float]:
     """Sample one equilibrium parameter vector (paper Eq. 2-4 ranges).
 
     alpha=True additionally samples the profile-shape exponents alpha_m/alpha_n
-    (data_v2 extension; the paper fixes them at 1.0/2.0).
+    (data_v2 extension; the paper fixes them at 1.0/2.0). ranges overrides the
+    parameter ranges (data_v5 MAST band).
     """
-    ranges = dict(PARAM_RANGES)
+    ranges = dict(PARAM_RANGES if ranges is None else ranges)
     if alpha:
         ranges.update(ALPHA_RANGES)
     return {name: float(rng.uniform(*ranges[name])) for name in ranges}
@@ -160,24 +191,27 @@ def sample_xpoints(rng: np.random.Generator, jitter: float = XPT_JITTER,
 
 
 def sample_anchor(rng: np.random.Generator, isoflux: bool = False,
-                  midplane: bool = False) -> tuple[float, float]:
+                  midplane: bool = False,
+                  r_range: tuple[float, float] = ANCHOR_MIDPLANE_R_RANGE) -> tuple[float, float]:
     """Sample the isoflux anchor point; fixed (1.5, 0.0) unless --isoflux-sampling.
 
     CRITICAL: draws nothing from rng when isoflux=False, so the baseline rng
     stream (and hence the whole baseline dataset) is unchanged. With
     midplane=True (data_v4 --anchor-midplane) the anchor is (R, 0.0) with
-    R ~ U[ANCHOR_MIDPLANE_R_RANGE]: the separatrix's outer midplane radius.
+    R ~ U[r_range] (default ANCHOR_MIDPLANE_R_RANGE; data_v5 MAST uses
+    MAST_ANCHOR_R_RANGE): the separatrix's outer midplane radius.
     """
     if not isoflux:
         return ISOFLUX_REF
     if midplane:
-        return (float(rng.uniform(*ANCHOR_MIDPLANE_R_RANGE)), 0.0)
+        return (float(rng.uniform(*r_range)), 0.0)
     return (float(rng.uniform(*ANCHOR_R_RANGE)), float(rng.uniform(*ANCHOR_Z_RANGE)))
 
 
 # ---- data_v4 physical-validity helpers (pure numpy, no new deps) ----
 def _control_coil_centers(tokamak) -> list[tuple[float, float]]:
-    """Centers of the 4 control coils: plain Coil -> (R, Z), ShapedCoil -> shape-point mean.
+    """Centers of the control coils: plain Coil -> (R, Z), ShapedCoil -> shape-point
+    mean, Solenoid (MAST central stack) -> (Rs, Z midpoint).
 
     Returned in convex-hull (counter-clockwise) order: tokamak.coils iterates
     P1L, P1U, P2L, P2U, which is a self-intersecting bowtie as a polygon.
@@ -186,7 +220,9 @@ def _control_coil_centers(tokamak) -> list[tuple[float, float]]:
     for label, coil in tokamak.coils:
         if not coil.control:
             continue
-        if np.isscalar(coil.R):
+        if hasattr(coil, "Rs"):  # Solenoid: distributed stack along Z
+            centers.append((float(coil.Rs), 0.5 * (float(coil.Zsmin) + float(coil.Zsmax))))
+        elif np.isscalar(coil.R):
             centers.append((float(coil.R), float(coil.Z)))
         else:
             centers.append((float(np.mean(coil.R)), float(np.mean(coil.Z))))
@@ -266,10 +302,11 @@ def _solve_one(args: tuple) -> dict | None:
     lo, up = sample_xpoints(rng, jitter=cfg["xpt_jitter"], jitter_z=cfg["xpt_jitter_z"],
                             r0=cfg["xpt_r0"], z0=cfg["xpt_z0"])
     anchor = sample_anchor(rng, isoflux=cfg["isoflux_sampling"],
-                           midplane=cfg["anchor_midplane"])
+                           midplane=cfg["anchor_midplane"],
+                           r_range=cfg["anchor_r_range"])
 
     try:
-        tokamak = freegs.machine.TestTokamak()
+        tokamak = cfg["machine_factory"]()
 
         eq = freegs.Equilibrium(
             tokamak=tokamak,
@@ -283,11 +320,21 @@ def _solve_one(args: tuple) -> dict | None:
         profiles = jtor.ConstrainPaxisIp(eq, paxis=paxis, Ip=Ip, fvac=fvac,
                                          alpha_m=alpha_m, alpha_n=alpha_n)
 
-        constrain = control.constrain(
-            xpoints=[lo, up],
-            isoflux=[(*lo, *anchor), (*up, *anchor)],
-            gamma=GAMMA,
-        )
+        if cfg["xpt_n"] == 1:
+            # data_v5 SN: single X-point + single isoflux to the anchor
+            # (3 constraints vs 4 control coils — no longer over-determined;
+            # asymmetric anchors with Z != 0 are infeasible, probe-verified 0/10)
+            constrain = control.constrain(
+                xpoints=[lo],
+                isoflux=[(*lo, *anchor)],
+                gamma=GAMMA,
+            )
+        else:
+            constrain = control.constrain(
+                xpoints=[lo, up],
+                isoflux=[(*lo, *anchor), (*up, *anchor)],
+                gamma=GAMMA,
+            )
 
         # convergenceInfo only under --save-constraint-diag (returns the Picard
         # psi-relative-change history used for the n_iter / psi_relchange fields)
@@ -296,16 +343,37 @@ def _solve_one(args: tuple) -> dict | None:
 
         # ---- acceptance checks (common) ----
         if eq.psi_axis is None or eq.psi_bndry is None:
-            return None
+            return None  # reject: no psi axis/bndry
         ip_err = abs(eq.plasmaCurrent() - Ip) / Ip
         if ip_err > IP_TOL:
-            return None
+            return None  # reject: |Ip_sol-Ip_tgt|/Ip_tgt > IP_TOL
         opt, xpt = critical.find_critical(eq.R, eq.Z, eq.psi())
-        if len(xpt) < MIN_XPTS:
-            return None
+        # data_v5 SN: count only separatrix X-points (psi >= psi_bndry).
+        # find_critical also reports vacuum-region saddle points below the
+        # boundary (TestTokamak ~2, MAST 5-6 per sample) — a single-null
+        # separatrix passes through exactly one X-point.
+        sep_xpt = [p for p in xpt if float(p[2]) >= eq.psi_bndry - 1e-6]
+        if cfg["xpt_n"] == 1:
+            if len(sep_xpt) != 1:
+                return None  # reject: separatrix X-point count != 1 (SN)
+        elif len(xpt) < MIN_XPTS:
+            return None  # reject: < MIN_XPTS X-points
+        # boundary flux definition: DN (paper) = mean of the two X-point fluxes;
+        # SN (data_v5) = the single separatrix X-point flux
+        psi_bndry = sep_xpt[0][2] if cfg["xpt_n"] == 1 else 0.5 * (xpt[0][2] + xpt[1][2])
+        # magnetic axis (SN): find_critical reports vacuum-region extrema whose
+        # total psi (incl. coil field) can exceed the core psi — e.g. a fixed
+        # point near (1.00, -1.10) in TestTokamak and R > 1.8 near the wall.
+        # The true axis is the highest-psi O-point *between* the lower X-point
+        # and the midplane anchor; DN keeps opt[0] (unchanged behaviour).
+        if cfg["xpt_n"] == 1 and opt:
+            cand = [o for o in opt if lo[0] < o[0] < anchor[0] and abs(o[1]) < abs(lo[1])]
+            axis_pt = max(cand, key=lambda o: o[2]) if cand else opt[0]
+        else:
+            axis_pt = opt[0] if opt else None
         # profile degeneracy guard (e.g. extreme shapes): L finite, Beta0 in (0,1)
         if not (np.isfinite(profiles.L) and 0.0 < profiles.Beta0 < 1.0):
-            return None
+            return None  # reject: degenerate profile
 
         # ---- data_v4 physical-validity checks (active only under --<flag>) ----
         diag = cfg["save_constraint_diag"]
@@ -317,12 +385,11 @@ def _solve_one(args: tuple) -> dict | None:
                      or cfg["min_core_depth"] is not None)
         if v4_active:
             # core depth (same psi_bndry definition as the saved axes field)
-            psi_bndry = 0.5 * (xpt[0][2] + xpt[1][2])
             core = eq.psi_axis - psi_bndry
             if core <= 0 or not np.isfinite(core):
-                return None
+                return None  # reject: core depth <= 0
             if cfg["min_core_depth"] is not None and core < cfg["min_core_depth"]:
-                return None
+                return None  # reject: core depth < threshold
 
             p_lo = _at(eq, lo)
             p_up = _at(eq, up)
@@ -331,50 +398,68 @@ def _solve_one(args: tuple) -> dict | None:
             # isoflux residual: the 4-coil Tikhonov fixed point keeps residual
             # orthogonal to the reachable subspace, so |psi(Xpt)-psi(anchor)|/core
             # can be large (data_v3 mean 0.50, max 2.10); reject above threshold
+            # (SN has no upper X-point: the residual is |psi(lo)-psi(anchor)|/core)
             if cfg["max_isoflux_residual"] is not None:
-                if max(abs(p_lo - p_anc), abs(p_up - p_anc)) / core > cfg["max_isoflux_residual"]:
-                    return None
+                res_terms = [abs(p_lo - p_anc)]
+                if cfg["xpt_n"] == 2:
+                    res_terms.append(abs(p_up - p_anc))
+                if max(res_terms) / core > cfg["max_isoflux_residual"]:
+                    return None  # reject: isoflux residual too high
 
             # geometry: coil-quadrilateral convex hull (with margin) + wall
+            # (SN: no upper X-point — x_coords up is a (0,0) placeholder)
+            pts = [lo, anchor] if cfg["xpt_n"] == 1 else [lo, up, anchor]
             hull_verts = np.asarray(_control_coil_centers(tokamak), dtype=np.float64)
-            wall_verts = np.column_stack([
-                np.asarray(tokamak.wall.R, dtype=np.float64),
-                np.asarray(tokamak.wall.Z, dtype=np.float64),
-            ])
-            for p in (lo, up, anchor):
+            # MAST has no wall (tokamak.wall is None): the wall check only
+            # applies to machines with one and --require-wall
+            wall_verts = None
+            if tokamak.wall is not None:
+                wall_verts = np.column_stack([
+                    np.asarray(tokamak.wall.R, dtype=np.float64),
+                    np.asarray(tokamak.wall.Z, dtype=np.float64),
+                ])
+            for p in pts:
                 if not _inside_with_margin(p, hull_verts, cfg["coil_margin"]):
-                    return None
+                    return None  # reject: outside coil hull
                 if cfg["require_wall"] and not _point_in_polygon(p, wall_verts):
-                    return None
-            # magnetic axis (O point) inside the (Xpt_lo, Xpt_up, anchor) triangle
-            if not opt:
-                return None
-            if not _point_in_triangle(opt[0][:2], (lo, up, anchor)):
-                return None
-            # anchor not too close to either X-point
+                    return None  # reject: outside wall
+            # magnetic axis: DN inside the (Xpt_lo, Xpt_up, anchor) triangle;
+            # SN between the lower X-point and the midplane anchor (Z compared
+            # against |Z_lo| — x_coords Z is negative for the lower X-point)
+            if cfg["xpt_n"] == 1:
+                ra, za = axis_pt[0], axis_pt[1]
+                if not (lo[0] < ra < anchor[0] and abs(za) < abs(lo[1])):
+                    return None  # reject: SN axis not between Xpt and anchor
+            elif not _point_in_triangle(opt[0][:2], (lo, up, anchor)):
+                return None  # reject: axis outside triangle
+            # anchor not too close to either X-point (SN: the lower one)
             if cfg["min_anchor_xpt_dist"] is not None:
-                if (np.hypot(anchor[0] - lo[0], anchor[1] - lo[1]) < cfg["min_anchor_xpt_dist"]
-                        or np.hypot(anchor[0] - up[0], anchor[1] - up[1]) < cfg["min_anchor_xpt_dist"]):
-                    return None
-            # each target X-point within --max-xpt-deviation of an actual X-point
+                if np.hypot(anchor[0] - lo[0], anchor[1] - lo[1]) < cfg["min_anchor_xpt_dist"]:
+                    return None  # reject: anchor too close to lo X-pt
+                if cfg["xpt_n"] == 2 and np.hypot(anchor[0] - up[0], anchor[1] - up[1]) < cfg["min_anchor_xpt_dist"]:
+                    return None  # reject: anchor too close to up X-pt
+            # each target X-point within --max-xpt-deviation of a separatrix
+            # (SN) / any actual (DN) X-point
             if cfg["max_xpt_deviation"] is not None:
-                xpt_xy = np.asarray([(r, z) for r, z, _ in xpt], dtype=np.float64)
-                for tgt in (lo, up):
+                cand = sep_xpt if cfg["xpt_n"] == 1 else xpt
+                xpt_xy = np.asarray([(r, z) for r, z, _ in cand], dtype=np.float64)
+                for tgt in ([lo] if cfg["xpt_n"] == 1 else [lo, up]):
                     if np.hypot(xpt_xy[:, 0] - tgt[0], xpt_xy[:, 1] - tgt[1]).min() > cfg["max_xpt_deviation"]:
-                        return None
+                        return None  # reject: X-pt deviation > threshold
 
             # ---- constraint diagnostics (all from values computed above) ----
             if diag:
-                xpt_xy = np.asarray([(r, z) for r, z, _ in xpt], dtype=np.float64)
+                cand = sep_xpt if cfg["xpt_n"] == 1 else xpt
+                xpt_xy = np.asarray([(r, z) for r, z, _ in cand], dtype=np.float64)
                 remaining = list(range(len(xpt_xy)))
                 xpts_actual = []
-                for tgt in (lo, up):  # greedy: pair each target with nearest unused X-point
+                for tgt in ([lo] if cfg["xpt_n"] == 1 else [lo, up]):  # greedy pairing
                     j = min(remaining, key=lambda j: np.hypot(xpt_xy[j, 0] - tgt[0],
                                                               xpt_xy[j, 1] - tgt[1]))
-                    xpts_actual.append(xpt[j][:3])
+                    xpts_actual.append(cand[j][:3])
                     remaining.remove(j)
                 xpts_actual = np.asarray(xpts_actual, dtype=np.float64)
-                o_point = np.asarray(opt[0][:3], dtype=np.float64)
+                o_point = np.asarray(axis_pt[:3], dtype=np.float64)
 
         # ---- extract fields ----
         psi_total = eq.psi()
@@ -396,10 +481,10 @@ def _solve_one(args: tuple) -> dict | None:
                 greens.append(coil.createPsiGreens(eq.R, eq.Z).astype(np.float32))
                 coil_currents.append(float(coil.current))
 
-        R_axis = opt[0][0] if opt else 1.0
-        Z_axis = opt[0][1] if opt else 0.0
-        # paper: boundary flux is the average of the two X-point fluxes
-        psi_bndry = 0.5 * (xpt[0][2] + xpt[1][2])
+        R_axis = axis_pt[0] if opt else 1.0
+        Z_axis = axis_pt[1] if opt else 0.0
+        # boundary flux: DN = average of the two X-point fluxes (paper);
+        # SN = the single separatrix X-point flux (computed above)
 
         result = {
             "psi_total": psi_total.astype(np.float32),
@@ -415,7 +500,11 @@ def _solve_one(args: tuple) -> dict | None:
                 [Ip, paxis, fvac]
                 + ([alpha_m, alpha_n] if "alpha_m" in params else []),
                 dtype=np.float32),
-            "x_coords": np.array([*lo, *up], dtype=np.float32),
+            # SN: x_coords stays 4-ch with the upper pair as (0,0) placeholders
+            # (constant channel -> z-scored 0; the config field disambiguates)
+            "x_coords": np.array([*lo, *up] if cfg["xpt_n"] == 2 else [*lo, 0.0, 0.0],
+                                 dtype=np.float32),
+            "config": np.array([0.0 if cfg["xpt_n"] == 2 else 1.0], dtype=np.float32),
             "axes": np.array([R_axis, Z_axis, psi_bndry, eq.psi_axis], dtype=np.float32),
             "L": np.array([profiles.L], dtype=np.float32),
             "Beta0": np.array([profiles.Beta0], dtype=np.float32),
@@ -428,15 +517,20 @@ def _solve_one(args: tuple) -> dict | None:
                 "xpts_actual": xpts_actual.astype(np.float32),
                 "o_point": o_point.astype(np.float32),
                 "xpt_constraint_res": np.array(
-                    [_at(eq, lo, "Br"), _at(eq, lo, "Bz"),
-                     _at(eq, up, "Br"), _at(eq, up, "Bz")], dtype=np.float32),
-                "isoflux_res": np.array([p_lo - p_anc, p_up - p_anc], dtype=np.float32),
-                "psi_at_constraints": np.array([p_lo, p_up, p_anc], dtype=np.float32),
+                    [_at(eq, lo, "Br"), _at(eq, lo, "Bz")]
+                    + ([_at(eq, up, "Br"), _at(eq, up, "Bz")] if cfg["xpt_n"] == 2 else []),
+                    dtype=np.float32),
+                "isoflux_res": np.array([p_lo - p_anc]
+                                        + ([p_up - p_anc] if cfg["xpt_n"] == 2 else []),
+                                        dtype=np.float32),
+                "psi_at_constraints": np.array(
+                    [p_lo, p_up, p_anc] if cfg["xpt_n"] == 2 else [p_lo, p_anc],
+                    dtype=np.float32),
                 "n_iter": np.array([len(conv[1])], dtype=np.float32),
                 "psi_relchange_final": np.array([conv[1][-1]], dtype=np.float32),
             })
         return result
-    except Exception:
+    except Exception as e:
         return None
 
 
@@ -460,7 +554,8 @@ def _solve_with_retry(args: tuple, max_retries: int = 5, rng: np.random.Generato
         result = _solve_one((params, i_seed + attempt * 1_000_000, cfg))
         if result is not None:
             return result
-        params = sample_params(rng, alpha=("alpha_m" in params))
+        params = sample_params(rng, alpha=("alpha_m" in params),
+                               ranges=cfg["param_ranges"])
     return None
 
 
@@ -485,22 +580,39 @@ R_GLOBAL = None
 Z_GLOBAL = None
 
 
-def generate(out_dir: str, split: str, n_samples: int, seed: int,
-             chunk_size: int, n_jobs: int, alpha_sampling: bool = False,
-             max_retries: int = 5, xpt_jitter: float = XPT_JITTER,
-             isoflux_sampling: bool = False, xpt_r0: float = XPT_R,
-             xpt_z0: float = XPT_Z, xpt_jitter_z: float | None = None,
-             anchor_midplane: bool = False, max_isoflux_residual: float | None = None,
-             max_xpt_deviation: float | None = None,
-             min_anchor_xpt_dist: float | None = None, require_wall: bool = False,
-             coil_margin: float = COIL_MARGIN,
-             min_core_depth: float | None = None,
-             save_constraint_diag: bool = False) -> None:
-    """Generate one split in resumable chunks."""
-    global R_GLOBAL, Z_GLOBAL
+def build_cfg(machine: str = "test", config: str = "dn",
+              xpt_jitter: float = XPT_JITTER, xpt_jitter_z: float | None = None,
+              isoflux_sampling: bool = False, anchor_midplane: bool = False,
+              coil_margin: float = COIL_MARGIN,
+              max_isoflux_residual: float | None = None,
+              max_xpt_deviation: float | None = None,
+              min_anchor_xpt_dist: float | None = None,
+              require_wall: bool = False,
+              min_core_depth: float | None = None,
+              save_constraint_diag: bool = False,
+              xpt_r0: float | None = None, xpt_z0: float | None = None) -> dict:
+    """Resolve the (machine, config) spec into a solver/acceptance cfg dict.
+
+    data_v5: machine x configuration registry (CONFIG_SPECS); defaults keep
+    the paper/data_v4 behaviour. Shared by generate() and the probe script.
+    """
     if xpt_jitter_z is None:
         xpt_jitter_z = xpt_jitter
-    cfg = {
+    spec = CONFIG_SPECS.get((machine, config), {})
+    xpt_n = spec.get("xpt_n", 2)
+    if xpt_r0 is None:
+        xpt_r0 = spec.get("xpt_r0", XPT_R)
+    if xpt_z0 is None:
+        xpt_z0 = spec.get("xpt_z0", XPT_Z)
+    has_wall = spec.get("has_wall", True)
+    if require_wall and not has_wall:
+        print(f"  WARNING: --require-wall ignored ({machine} has no wall)")
+    return {
+        "xpt_n": xpt_n,
+        "machine_factory": MACHINE_FACTORIES[machine],
+        "has_wall": has_wall,
+        "param_ranges": spec.get("param_ranges", PARAM_RANGES),
+        "anchor_r_range": spec.get("anchor_r_range", ANCHOR_MIDPLANE_R_RANGE),
         "xpt_r0": xpt_r0, "xpt_z0": xpt_z0,
         "xpt_jitter": xpt_jitter, "xpt_jitter_z": xpt_jitter_z,
         "isoflux_sampling": isoflux_sampling, "anchor_midplane": anchor_midplane,
@@ -508,10 +620,30 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
         "max_isoflux_residual": max_isoflux_residual,
         "max_xpt_deviation": max_xpt_deviation,
         "min_anchor_xpt_dist": min_anchor_xpt_dist,
-        "require_wall": require_wall,
+        "require_wall": require_wall and has_wall,
         "min_core_depth": min_core_depth,
         "save_constraint_diag": save_constraint_diag,
     }
+
+
+def generate(out_dir: str, split: str, n_samples: int, seed: int,
+             chunk_size: int, n_jobs: int, alpha_sampling: bool = False,
+             max_retries: int = 5, xpt_jitter: float = XPT_JITTER,
+             isoflux_sampling: bool = False, xpt_r0: float | None = None,
+             xpt_z0: float | None = None, xpt_jitter_z: float | None = None,
+             anchor_midplane: bool = False, max_isoflux_residual: float | None = None,
+             max_xpt_deviation: float | None = None,
+             min_anchor_xpt_dist: float | None = None, require_wall: bool = False,
+             coil_margin: float = COIL_MARGIN,
+             min_core_depth: float | None = None,
+             save_constraint_diag: bool = False,
+             config: str = "dn", machine: str = "test") -> None:
+    """Generate one split in resumable chunks."""
+    global R_GLOBAL, Z_GLOBAL
+    cfg = build_cfg(machine, config, xpt_jitter, xpt_jitter_z, isoflux_sampling,
+                    anchor_midplane, coil_margin, max_isoflux_residual,
+                    max_xpt_deviation, min_anchor_xpt_dist, require_wall,
+                    min_core_depth, save_constraint_diag, xpt_r0, xpt_z0)
 
     if not HAS_FREEGS:
         raise RuntimeError("freegs not found. Install freegs first.")
@@ -522,7 +654,7 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
 
     # shared grid (identical across samples)
     eq_tmp = freegs.Equilibrium(
-        tokamak=freegs.machine.TestTokamak(),
+        tokamak=cfg["machine_factory"](),
         Rmin=RMIN, Rmax=RMAX, Zmin=ZMIN, Zmax=ZMAX, nx=NX, ny=NY,
         boundary=boundary.freeBoundaryHagenow,
     )
@@ -533,14 +665,14 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
     n_chunks = int(np.ceil(n_samples / chunk_size))
 
     print(f"\n{'='*70}")
-    print(f"  DN dataset generation | split={split} | n={n_samples} | seed={seed}")
+    print(f"  {config.upper()} dataset generation | machine={machine} | split={split} | n={n_samples} | seed={seed}")
     print(f"  grid {NX}x{NY}, R [{RMIN},{RMAX}], Z [{ZMIN},{ZMAX}], chunk_size={chunk_size}")
     if xpt_jitter_z != xpt_jitter:
-        print(f"  X-pts ({xpt_r0},+-{xpt_z0}) R+-{xpt_jitter} / Z+-{xpt_jitter_z} m, "
+        print(f"  X-pts ({cfg['xpt_r0']},+-{cfg['xpt_z0']}) R+-{xpt_jitter} / Z+-{xpt_jitter_z} m, "
               f"isoflux->{'sampled' if isoflux_sampling else ISOFLUX_REF}, "
               f"gamma={GAMMA}, maxits={MAXITS}")
     else:
-        print(f"  X-pts ({xpt_r0},+-{xpt_z0})+-{xpt_jitter} m, "
+        print(f"  X-pts ({cfg['xpt_r0']},+-{cfg['xpt_z0']})+-{xpt_jitter} m, "
               f"isoflux->{'sampled' if isoflux_sampling else ISOFLUX_REF}, "
               f"gamma={GAMMA}, maxits={MAXITS}")
     if isoflux_sampling:
@@ -580,7 +712,8 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
         i0 = ci * chunk_size
         idx = range(i0, min(i0 + chunk_size, n_samples))
         # pre-sample deterministic params for this chunk
-        chunk_params = [sample_params(rng, alpha=alpha_sampling) for _ in idx]
+        chunk_params = [sample_params(rng, alpha=alpha_sampling, ranges=cfg["param_ranges"])
+                        for _ in idx]
 
         t0 = time.perf_counter()
         results = Parallel(n_jobs=n_jobs, verbose=0)(
@@ -592,6 +725,10 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
         valid = [r for r in results if r is not None]
         total_accepted += len(valid)
         total_solves += len(results)
+        if not valid:
+            raise RuntimeError(
+                f"chunk {ci:03d}: 0/{len(results)} accepted — adjust sampling "
+                f"ranges / acceptance thresholds")
         save_chunk(chunk_dir, ci, valid)
         print(f"  chunk {ci:03d}: {len(valid)}/{len(results)} accepted, "
               f"{dt:.1f}s ({dt/max(len(results),1):.2f}s/solve)")
@@ -636,6 +773,8 @@ def merge(out_dir: str, split: str) -> None:
     print(f"    fvac:  [{p[:,2].min():.2f}, {p[:,2].max():.2f}]     (paper [0.5, 3.0])")
     x = arrays["x_coords"]
     print(f"    X-pt R: [{x[:,0].min():.3f}, {x[:,0].max():.3f}] m (paper 1.1 +- 0.02)")
+    if "config" in arrays and arrays["config"].max() > 0.5:
+        print(f"    (SN samples: x_coords up channels are (0,0) placeholders)")
     if p.shape[1] >= 5:
         print(f"    alpha_m: [{p[:,3].min():.3f}, {p[:,3].max():.3f}] (v2 [1.0, 2.0])")
         print(f"    alpha_n: [{p[:,4].min():.3f}, {p[:,4].max():.3f}] (v2 [1.5, 2.5])")
@@ -643,6 +782,9 @@ def merge(out_dir: str, split: str) -> None:
         a = arrays["anchor"]
         print(f"    anchor R: [{a[:,0].min():.3f}, {a[:,0].max():.3f}] m (v3 [1.2, 1.8])")
         print(f"    anchor Z: [{a[:,1].min():.3f}, {a[:,1].max():.3f}] m (v3 [-0.3, 0.3])")
+    if "config" in arrays:
+        c = arrays["config"]
+        print(f"    config: DN {int((c == 0).sum())} / SN {int((c == 1).sum())}")
 
     # data_v4 constraint diagnostics (present when --save-constraint-diag)
     if "isoflux_res" in arrays:
@@ -653,22 +795,33 @@ def merge(out_dir: str, split: str) -> None:
         print(f"    isoflux res |psi(Xpt)-psi(anchor)|/core: mean {norm.mean():.3f}, "
               f"median {np.median(norm):.3f}, p95 {np.percentile(norm, 95):.3f}, "
               f"max {norm.max():.3f} (v3 mean 0.50 / max 2.10)")
-        dev = np.hypot(arrays["xpts_actual"][:, :, 0] - arrays["x_coords"][:, [0, 2]],
-                       arrays["xpts_actual"][:, :, 1] - arrays["x_coords"][:, [1, 3]]).max(axis=1)
+        # SN samples carry x_coords up=(0,0) placeholders (n_actual==1): pair
+        # against the lower X-point only, or the placeholder inflates the dev
+        n_actual = arrays["xpts_actual"].shape[1]
+        tgt = arrays["x_coords"][:, :2] if n_actual == 1 \
+            else arrays["x_coords"][:, [0, 2]]
+        dev = np.hypot(arrays["xpts_actual"][:, :, 0] - tgt[:, 0, None],
+                       arrays["xpts_actual"][:, :, 1] - tgt[:, 1, None]).max(axis=1)
         print(f"    X-pt |actual - target| max: mean {dev.mean():.4f} m, "
               f"p95 {np.percentile(dev, 95):.4f} m, max {dev.max():.4f} m")
         print(f"    n_iter: [{arrays['n_iter'].min():.0f}, {arrays['n_iter'].max():.0f}], "
               f"psi_relchange_final max {arrays['psi_relchange_final'].max():.3e} "
               f"(rtol {RTOL})")
-        hull = np.asarray(COIL_HULL, dtype=np.float64)
-        n_ok = 0
-        for i in range(len(arrays["x_coords"])):
-            pts = [arrays["x_coords"][i, :2], arrays["x_coords"][i, 2:]]
-            if "anchor" in arrays:
-                pts.append(arrays["anchor"][i])
-            if all(_inside_with_margin(p, hull, 0.0) for p in pts):
-                n_ok += 1
-        print(f"    three points inside coil quadrilateral: {n_ok}/{len(arrays['x_coords'])}")
+        # coil-quadrilateral hull sanity applies only to the 4-coil TestTokamak
+        # (COIL_HULL is pinned); MAST (11 coils) uses the machine's own hull
+        if arrays["coil_currents"].shape[1] == 4:
+            hull = np.asarray(COIL_HULL, dtype=np.float64)
+            n_ok = 0
+            for i in range(len(arrays["x_coords"])):
+                pts = [arrays["x_coords"][i, :2], arrays["x_coords"][i, 2:]]
+                if "anchor" in arrays:
+                    pts.append(arrays["anchor"][i])
+                if all(_inside_with_margin(p, hull, 0.0) for p in pts):
+                    n_ok += 1
+            print(f"    three points inside coil quadrilateral: {n_ok}/{len(arrays['x_coords'])}")
+        else:
+            print(f"    coil-quadrilateral hull sanity: skipped "
+                  f"({arrays['coil_currents'].shape[1]}-coil machine)")
 
 
 def main() -> None:
@@ -693,10 +846,11 @@ def main() -> None:
                              "and save the per-sample anchor field (data_v3; "
                              "default off keeps the fixed (1.5, 0.0) anchor)")
     # ---- data_v4: feasible-region sampling + physical-validity acceptance ----
-    parser.add_argument("--xpt-r0", type=float, default=XPT_R,
-                        help="X-point reference R (default 1.1; data_v4 uses 1.2)")
-    parser.add_argument("--xpt-z0", type=float, default=XPT_Z,
-                        help="X-point reference |Z| (default 0.6)")
+    parser.add_argument("--xpt-r0", type=float, default=None,
+                        help="X-point reference R (default 1.1; data_v4 uses 1.2; "
+                             "MAST spec default 0.7)")
+    parser.add_argument("--xpt-z0", type=float, default=None,
+                        help="X-point reference |Z| (default 0.6; MAST spec default 1.1)")
     parser.add_argument("--xpt-jitter-z", type=float, default=None,
                         help="X-point |dZ| jitter half-width (default = --xpt-jitter; "
                              "data_v4 uses 0.15 against --xpt-jitter 0.10)")
@@ -729,6 +883,15 @@ def main() -> None:
                              "psi_at_constraints, n_iter, psi_relchange_final; data_v4)")
     parser.add_argument("--merge", action="store_true",
                         help="merge existing chunks of --split into a single npz")
+    # ---- data_v5: machine x configuration ----
+    parser.add_argument("--config", choices=["dn", "sn"], default="dn",
+                        help="equilibrium configuration: dn = double null "
+                             "(default), sn = single null (data_v5; single "
+                             "X-point + isoflux to the midplane anchor)")
+    parser.add_argument("--machine", choices=["test", "mast"], default="test",
+                        help="machine geometry: test = TestTokamak (default), "
+                             "mast = MAST (data_v5; MAST has no wall, 11 "
+                             "control coils)")
     args = parser.parse_args()
 
     if args.merge:
@@ -741,7 +904,7 @@ def main() -> None:
                  args.anchor_midplane, args.max_isoflux_residual,
                  args.max_xpt_deviation, args.min_anchor_xpt_dist,
                  args.require_wall, args.coil_margin, args.min_core_depth,
-                 args.save_constraint_diag)
+                 args.save_constraint_diag, args.config, args.machine)
 
 
 if __name__ == "__main__":

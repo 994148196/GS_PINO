@@ -1,0 +1,36 @@
+{
+  "overall_mixed_test": {
+    "n": 1000,
+    "rel_l2_pct_mean": 0.9349888876779004,
+    "rmse_phys_Wb_mean": 0.00039874386731389677,
+    "gs_residual_ratio": 0.9862116285778965
+  },
+  "per_config_buckets": {
+    "dn": {
+      "n": 500,
+      "rel_l2_pct": {
+        "mean": 0.6674,
+        "std": 0.3707,
+        "median": 0.5602,
+        "p95": 1.2892
+      },
+      "rmse_phys_Wb_mean": 0.00027386673910950775,
+      "gs_residual_ratio": 0.9888288852805212,
+      "n_find_critical_fail": 0,
+      "sep_mean_cm": 30.500423790616097
+    },
+    "sn": {
+      "n": 500,
+      "rel_l2_pct": {
+        "mean": 1.2026,
+        "std": 0.6589,
+        "median": 1.0326,
+        "p95": 2.5184
+      },
+      "rmse_phys_Wb_mean": 0.0005236209955182858,
+      "gs_residual_ratio": 0.9836341177557518,
+      "n_find_critical_fail": 0,
+      "sep_mean_cm": 3.803988190386577
+    }
+  }
+}

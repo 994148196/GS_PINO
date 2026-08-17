@@ -81,9 +81,14 @@ def main() -> None:
                     help="'xa' (data_v3): append the 2 sampled isoflux-anchor "
                          "coordinates -> 13 channels; default 'xpoints' keeps "
                          "9/11-channel behavior")
+    ap.add_argument("--config-input", action="store_true",
+                    help="data_v5 mixed-config training: append the 1-channel "
+                         "config code (0=DN, 1=SN) to the scalars (requires "
+                         "'config' in the dataset; exp008)")
     args = ap.parse_args()
 
     use_anchor = args.input_mode == "xa"
+    use_config = args.config_input
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     set_seed(args.seed)
@@ -91,19 +96,19 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- data ----
-    # normalization stats from the FULL train pool (kept identical across all
-    # scaling-study N so input representations are comparable)
-    with np.load(args.train_data) as d:
-        stats = compute_stats({
-            "params": d["params"], "x_coords": d["x_coords"], "psi_total": d["psi_total"],
-            **({"anchor": d["anchor"]} if use_anchor else {})},
-            use_anchor=use_anchor)
-    train_idx = nested_train_indices(
-        len(np.load(args.train_data)["psi_total"]), args.n_train, args.perm_seed)
+    # --train-data/--val-data accept comma-separated file lists (data_v5
+    # mixed-config: dn.npz,sn.npz); normalization stats come from the FULL
+    # concatenated train pool (kept identical across all scaling-study N so
+    # input representations are comparable)
+    train_ds = DNFnoDataset(args.train_data, stats=None, use_anchor=use_anchor,
+                            use_config=use_config)
+    stats = train_ds.stats
+    train_idx = nested_train_indices(train_ds.n_full, args.n_train, args.perm_seed)
 
     train_ds = DNFnoDataset(args.train_data, stats=stats, indices=train_idx,
-                            use_anchor=use_anchor)
-    val_ds = DNFnoDataset(args.val_data, stats=stats, use_anchor=use_anchor)
+                            use_anchor=use_anchor, use_config=use_config)
+    val_ds = DNFnoDataset(args.val_data, stats=stats, use_anchor=use_anchor,
+                          use_config=use_config)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                               num_workers=args.workers, pin_memory=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
@@ -188,6 +193,7 @@ def main() -> None:
         "n_train": args.n_train,
         "seed": args.seed,
         "input_mode": args.input_mode,
+        "config_input": args.config_input,
         "stats": {k: (v.tolist() if hasattr(v, "tolist") else float(v))
                   for k, v in stats.items()},
     }, out_dir / "best.pt")
