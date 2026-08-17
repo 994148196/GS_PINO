@@ -141,6 +141,16 @@ class DNFnoDataset(Dataset):
                         "use_config=True but dataset has no 'config' field — "
                         "regenerate with generate_dn_dataset.py (data_v5)")
             self.config = _load_many("config").astype(np.float32)
+        # ground-truth geometry (data_v4+: xpts_actual = separatrix X-points
+        # (N, n_xpt, 3) with psi, o_point = magnetic axis (N, 3)); None for the
+        # paper data/ & data_v2 sets (evaluate/visualize fall back to
+        # find_critical pairing there)
+        self.xpts_actual = None
+        self.o_point = None
+        with np.load(paths[0]) as d:
+            if "xpts_actual" in d.files and "o_point" in d.files:
+                self.xpts_actual = _load_many("xpts_actual").astype(np.float32)
+                self.o_point = _load_many("o_point").astype(np.float32)
         self.n_full = len(self.psi_total)
 
         if stats is None:  # compute stats from the full dataset (train use)

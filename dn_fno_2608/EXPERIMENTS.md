@@ -1,6 +1,7 @@
 # dn_fno_2608 改进实验总览（exp001–exp010）
 
-> 2026-08-17 更新（data_v5 + exp008/009）。
+> 2026-08-17 更新（data_v5 + exp008/009/010；几何指标 v2 修复，figures
+> 重生成）。
 > 本文档是**改进实验的总地图**：数据集怎么演进、每个实验改了什么、结果如何、
 > 串成一条什么结论线。论文复现（冻结基线）见 [README.md](README.md)；
 > 每个实验/数据集的详细文档在各自目录，本文档末尾有索引。
@@ -125,8 +126,11 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
    （up 占位）即物理自包含。
 8. **SN 桶误差系统性高于 DN 桶**（专职 0.953 vs 0.492，混合同趋势）：SN
    约束自由度少（3 约束对 4 线圈）+ 求解 n_iter 40 vs 9，非 isoflux 残差
-   问题（SN 残差为 0）；sep_mean 相反（DN 30 cm vs SN 2 cm）是 MAST 无墙下
-   find_critical 假鞍点对 DN 双 X 点配对的诊断伪差，不影响 rel L2 结论。
+   问题（SN 残差为 0）。几何指标 v2 修复后（2026-08-17，真值基准配对 +
+   射线法分离面，见 exp008 README §5.3）：X 点 1–3 cm、sep_mean 0.34–0.56 cm、
+   sep 面积 <0.7%、O 点 <0.7 cm，两桶同健康；旧版"sep_mean DN 30 cm vs
+   SN 2 cm 相反趋势"是 MAST 无墙下 find_critical 假鞍点对 DN 双 X 点贪心
+   配对的诊断伪差，不影响 rel L2 结论。
 
 ## 6. 遗留问题与后续方向
 
@@ -163,8 +167,12 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 
 ## 8. 可视化产物
 
-每个实验目录下有 `figures/`（与 `outputs/report/figures/` 同格式，2026-08-14
-生成，`visualize_dn_fno.py --title` 标注实验名）：
+每个实验目录下有 `figures/`（与 `outputs/report/figures/` 同格式，
+`visualize_dn_fno.py --title` 标注实验名）。exp008/009/010 的 figures 于
+2026-08-17 重生成（几何指标 v2）：fig1 现绘制装置结构（MAST 墙/线圈）+
+**仅分离面 X 点**+磁轴+separatrix（R/Z 等比例，`--machine` 参数），fig3
+散点上限取 P95 保险（旧版曾把真空假鞍点/等高线穿出网格误报为数十 cm
+误差）。exp001–007 的 figures 未重跑（基线，见用户决策）：
 
 | 实验 | figures 位置 | 内容 |
 |---|---|---|

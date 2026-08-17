@@ -56,7 +56,12 @@ data_v4（exp006/007）验证了"约束可达 + 可行区采样"下 X 点输入�
 | RMSE phys (Wb) | 2.74e-04 | 1.85e-04 | 5.24e-04 | 4.31e-04 |
 | GS 残差比值 | 0.9888 | 0.9876 | 0.9836 | 0.9906 |
 | find_critical 失败 | 0/500 | 0/500 | 0/500 | 0/500 |
-| sep_mean 误差 (cm) | 30.5 | 25.6 | 3.8 | 2.0 |
+| X 点误差 lo/up (cm) | 3.19 / 2.37 | 2.14 / 1.91 | 1.06 / — | 0.97 / — |
+| sep_mean 误差 (cm) | 0.56 | 0.40 | 0.43 | 0.34 |
+| sep 面积相对误差 (%) | 0.68 | 0.47 | 0.40 | 0.33 |
+| O 点误差 (cm) | 0.48 | 0.34 | 0.61 | 0.42 |
+
+（SN 无上 X 点 → x_up 为 NaN；几何指标 v2：真值基准配对 + 射线法分离面，见 §5.3）
 
 ### 3b. 训练（val）
 
@@ -82,9 +87,10 @@ figures：[DN test](model_a14ch_xa_mix/figures_dn/)、
 3. **config 通道被有效利用**：专职模型**跨配置外推完全失败**（exp009 §3b：
    DN→SN 253%、SN→DN 4.0e8%），而混合模型两个桶都健康——up=(0,0) 占位
    恒值通道 + config one-hot 的组合让模型能区分位形并切换映射。
-4. sep_mean 误差 SN 桶远小于 DN 桶（~2–4 cm vs ~26–30 cm）：MAST 无墙 +
-   11 线圈下 find_critical 对 DN 双 X 点的配对/定位更难（真空假鞍点多），
-   与 rel L2 趋势相反，属诊断层面的机器效应，不影响 rel L2 结论。
+4. **几何误差与 rel L2 同量级、两桶同趋势**（v2 修复后）：X 点 1–3 cm、
+   sep_mean 0.34–0.56 cm、sep 面积 <0.7%、O 点 <0.7 cm。SN 桶 X 点略优于
+   DN 桶（单 X 点无配对歧义），与 rel L2（SN > DN）呈弱反相关——X 点在
+   平缓 psi 区，位置误差对场误差高度敏感，两指标度量不同的物理量。
 
 ## 5. 偏差记录
 
@@ -96,3 +102,17 @@ figures：[DN test](model_a14ch_xa_mix/figures_dn/)、
    回归：exp009（无 config）路径不受影响（改动为条件分支）。
 2. **visualize 不支持逗号分隔多文件**：exp008 figures 按配置分开生成
    （figures_dn/、figures_sn/），未做多文件拼接可视化。
+3. **几何指标 v2（2026-08-17，用户报告 fig3 大误差后修复）**：旧版
+   geometry_metrics 从 find_critical 全候选按 Z 符号取第一个点配对（MAST
+   无墙 → 混入 5–6 个真空假鞍点，配对失败时报数十 cm 假误差）、SN 的
+   psi_bndry 错取"前两个 xpt 均值"（= 分离面 X 点 + 假鞍点均值）、分离面
+   追踪依赖 matplotlib 闭合环（pred 场等高线穿出网格不闭合 → fallback 抓
+   全域散点 → sep_mean 虚报 25–30 cm / 面积 100%+）。v2 修复：X 点按
+   数据集真值（xpts_actual/o_point/axes[2]）配对（psi≥bnd−2e-3 + 距离
+   ≤0.2 m，漏检走 ±0.35 m 局部鞍点找回，仍无则 NaN 诚实报告）；psi_bndry
+   = 配对 X 点 psi 均值（DN）/唯一 X 点 psi（SN）；分离面 = 磁轴射线法
+   （首穿 level，天然闭合）。修复后各实验几何数字见本文 §3a（旧版备份：
+   eval*/metrics_v1.json、figures*/stats_per_sample_v1.json）。X 点仍不可
+   定位率：DN ~10%、SN ~16%（FNO 平滑场中鞍点在平缓 psi 区消失，非配对
+   错误）。fig1 新增装置结构（墙/线圈）+ 仅分离面 X 点/磁轴/分离面，
+   R/Z 等比例（--machine 参数）；fig3 散点上限取 P95。

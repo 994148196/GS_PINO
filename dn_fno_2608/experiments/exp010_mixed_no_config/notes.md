@@ -22,6 +22,12 @@
 exp010 两桶都健康且均略优于 exp008（+config）。find_critical 失败 DN
 桶 1/500（可忽略），GS 残差比 0.995/0.977 均正常。
 
+几何指标（v2，2026-08-17 重评估）：DN x_lo/x_up 2.65/2.59 cm、sep_mean
+0.55 cm、sep 面积 0.70%、O 点 0.50 cm；SN x_lo 0.94 cm（x_up NaN）、
+sep_mean 0.40 cm、sep 面积 0.44%、O 点 0.50 cm。与 exp008/exp009 同健康
+量级——去掉 config 通道不影响几何保真（无 config 的混合模型同样配得上
+X 点/分离面/O 点）。
+
 ## 3. 解读：为什么无 config 反而略好？
 
 1. **占位编码 = 物理自包含的位形信号**：SN 的 up=(0,0) 占位不是随机噪声，

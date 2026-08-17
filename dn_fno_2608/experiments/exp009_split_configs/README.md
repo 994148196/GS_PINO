@@ -42,7 +42,13 @@ exp008 混合训练的核心对照：**专职单一位形（DN/SN 各自训练�
 | RMSE phys (Wb) | 1.85e-04 | 4.31e-04 |
 | GS 残差比值 | 0.9876 | 0.9906 |
 | find_critical 失败 | 0/500 | 0/500 |
-| sep_mean 误差 (cm) | 25.6 | 2.0 |
+| X 点误差 lo/up (cm) | 2.14 / 1.91 | 0.97 / — |
+| sep_mean 误差 (cm) | 0.40 | 0.34 |
+| sep 面积相对误差 (%) | 0.47 | 0.33 |
+| O 点误差 (cm) | 0.34 | 0.42 |
+
+（SN 无上 X 点 → x_up 为 NaN；几何指标 v2：真值基准配对 + 射线法分离面，
+见 exp008 README §5.3 修复记录；旧版 sep_mean 25.6/2.0 cm 为诊断伪差）
 
 训练：DN best val rel L2 0.4903%（epoch 795，11.1 min）、SN best val
 0.8834%（epoch 797，11.1 min）。

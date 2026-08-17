@@ -33,7 +33,9 @@ import matplotlib.pyplot as plt
 from gs_pino_dn_fno_2608.data_dn_fno import DNFnoDataset
 from gs_pino_dn_fno_2608.data_dn_fno_coils import DNFnoDatasetCoils
 from gs_pino_dn_fno_2608.model_dn_fno import build_model
-from gs_pino_dn_fno_2608.evaluate_dn_fno import gs_residual_ratio, geometry_metrics
+from gs_pino_dn_fno_2608.evaluate_dn_fno import (
+    gs_residual_ratio, geometry_metrics, match_xpoints_and_axis,
+    separatrix_pts, separatrix_points)
 
 from freegs import critical
 
@@ -45,16 +47,53 @@ PAPER = {
 }
 
 
-def plot_field(ax, R, Z, psi, levels, title, xpt=None, opt=None, sep_level=None):
+def get_machine_geometry(machine_name: str | None):
+    """(wall_r, wall_z, coils) for fig1 overlays; coils = [(R, Z, I), ...].
+
+    MAST is wall-less (wall None) with 11 coils; TestTokamak has a wall.
+    """
+    if machine_name is None:
+        return None, None, []
+    from freegs import machine as fg_machine
+    m = fg_machine.MAST() if machine_name == "mast" else fg_machine.TestTokamak()
+    wall_r, wall_z = None, None
+    if m.wall is not None:
+        wall_r, wall_z = np.asarray(m.wall.R), np.asarray(m.wall.Z)
+    coils = []
+    for entry in m.coils:
+        name, coil = entry[0], entry[1]
+        if hasattr(coil, "R"):        # PF coil
+            coils.append((float(coil.R), float(coil.Z), float(coil.current)))
+        else:                         # solenoid: axial stack at Rs
+            coils.append((float(coil.Rs), 0.0, float(coil.current)))
+    return wall_r, wall_z, coils
+
+
+def plot_field(ax, R, Z, psi, levels, title, xpt=None, opt=None, sep_pts=None,
+               wall_r=None, wall_z=None, coils=None):
+    """True/|diff| panels: device (wall+coils) drawn beneath, X-points as white
+    crosses, magnetic axis as white circle, separatrix as a white line. R/Z are
+    kept on the same scale (aspect equal) so the device is not distorted."""
+    ax.set_aspect("equal")
     cf = ax.contourf(R, Z, psi, levels=levels, cmap="viridis")
-    if sep_level is not None:
-        ax.contour(R, Z, psi, levels=[sep_level], colors="white", linewidths=1.2)
+    if coils:
+        for r, z, i in coils:
+            ax.plot(r, z, "s", ms=6, color="#b30", mec="w", mew=0.6)
+            ax.text(r + 0.03, z + 0.03, f"{i*1e-3:+.1f}", fontsize=5, color="0.25")
+    if wall_r is not None:
+        ax.plot(np.append(wall_r, wall_r[0]), np.append(wall_z, wall_z[0]),
+                "k-", lw=1.8)
+    if sep_pts is not None and len(sep_pts):
+        ax.plot(np.append(sep_pts[:, 0], sep_pts[0, 0]),
+                np.append(sep_pts[:, 1], sep_pts[0, 1]), "w-", lw=1.3)
     if xpt:
-        for r, z, _ in xpt:
+        for pt in xpt:
+            if pt is None:
+                continue
+            r, z, _ = pt
             ax.plot(r, z, "wx", markersize=9, markeredgewidth=2)
-    if opt:
-        r, z, _ = opt[0]
-        ax.plot(r, z, "wo", markersize=6, markeredgewidth=1.5)
+    if opt is not None:
+        ax.plot(opt[0], opt[1], "wo", markersize=6, markeredgewidth=1.5)
     ax.set_title(title, fontsize=10)
     ax.set_xlabel("R (m)")
     ax.set_ylabel("Z (m)")
@@ -78,6 +117,9 @@ def main() -> None:
     ap.add_argument("--out-dir", default="dn_fno_2608/outputs/report/figures")
     ap.add_argument("--max-samples", type=int, default=0)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--machine", default=None, choices=["test", "mast"],
+                    help="device geometry (wall/coils) for fig1; data_v4/v5 use "
+                         "'test'/'mast' respectively (npz has no machine field)")
     ap.add_argument("--title", default="arXiv:2608.05555 reproduction — N=5000 FNO",
                     help="suptitle for fig1 (dataset/experiment description)")
     args = ap.parse_args()
@@ -110,14 +152,24 @@ def main() -> None:
     model.eval()
 
     # ---- per-sample metrics (cached in stats_per_sample.json) ----
+    # schema: bump when the metric definition changes (v2 = truth-anchored
+    # geometry with vacuum-saddle exclusion / ray-traced separatrix)
+    SCHEMA = 2
     stats_path = out_dir / "stats_per_sample.json"
     if stats_path.exists():
-        print(f"reusing cached per-sample stats: {stats_path}")
         with open(stats_path) as f:
-            rows = {k: np.array(v) for k, v in json.load(f).items()}
-        n_eval = len(rows["rel_l2_pct"])
-        print(f"  ({n_eval} samples)")
+            cached = json.load(f)
+        if cached.get("schema") == SCHEMA:
+            rows = {k: np.array(v) for k, v in cached.items() if k != "schema"}
+            n_eval = len(rows["rel_l2_pct"])
+            print(f"reusing cached per-sample stats (schema {SCHEMA}): {stats_path}")
+            print(f"  ({n_eval} samples)")
+        else:
+            rows = None
+            print(f"stale cache (schema mismatch), recomputing: {stats_path}")
     else:
+        rows = None
+    if rows is None:
         print(f"evaluating {n_full} test samples (checkpoint {args.checkpoint})")
         rows = {k: [] for k in
                 ["rel_l2_pct", "rmse_phys", "gs_pred", "gs_true",
@@ -141,7 +193,15 @@ def main() -> None:
                 rows["gs_true"].append(gs_residual_ratio(
                     psi_true, R, Z, ds.dpdpsi[ds.indices[i]], ds.FdFdpsi[ds.indices[i]], mask_i))
 
-                gm = geometry_metrics(psi_pred, psi_true, R, Z)
+                j_i = ds.indices[i]
+                xa = getattr(ds, "xpts_actual", None)   # absent on coil datasets
+                op = getattr(ds, "o_point", None)
+                gm = geometry_metrics(
+                    psi_pred, psi_true, R, Z,
+                    xpts_true=xa[j_i] if xa is not None else None,
+                    o_true=op[j_i] if op is not None else None,
+                    psi_bndry_true=float(ds.axes[j_i][2]) if ds.axes is not None else None,
+                    anchor=ds.anchor[j_i] if ds.anchor is not None else None)
                 rows["n_xpt_pred"].append(gm.get("n_xpt_pred", 0))
                 for k in rows:
                     if k in gm:
@@ -153,7 +213,8 @@ def main() -> None:
                     print(f"  {i + 1}/{n_full}")
         rows = {k: np.array(v) for k, v in rows.items()}
         with open(stats_path, "w") as f:
-            json.dump({k: v.tolist() for k, v in rows.items()}, f, indent=1)
+            json.dump({"schema": SCHEMA, **{k: v.tolist() for k, v in rows.items()}},
+                      f, indent=1)
         n_eval = n_full
 
     n_fail = int((rows["n_xpt_pred"] < 2).sum())
@@ -163,6 +224,7 @@ def main() -> None:
     from matplotlib.gridspec import GridSpec
     from matplotlib.ticker import MaxNLocator, ScalarFormatter
 
+    wall_r, wall_z, coils = get_machine_geometry(args.machine)
     i_best = int(np.nanargmin(rows["rel_l2_pct"]))
     i_worst = int(np.nanargmax(rows["rel_l2_pct"]))
     print(f"  best sample #{i_best}: rel L2 {rows['rel_l2_pct'][i_best]:.4f}% | "
@@ -172,9 +234,34 @@ def main() -> None:
         cb.ax.yaxis.set_major_locator(MaxNLocator(5))
         cb.ax.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
 
+    def fig1_geoms(psi_pred, psi_true, j):
+        """(xpt_t, o_t, sep_t, xpt_p, o_p, sep_p) — separatrix X-points, magnetic
+        axis and separatrix curve, grounded on the dataset's true geometry
+        (data_v4+) with the prediction paired via match_xpoints_and_axis;
+        paper data/ falls back to find_critical + closed-contour separatrix."""
+        xa = getattr(ds, "xpts_actual", None)
+        op = getattr(ds, "o_point", None)
+        if xa is not None:
+            xpts_t = [tuple(map(float, row)) for row in xa[j]]
+            o_t = (float(op[j][0]), float(op[j][1]))
+            bnd_t = float(ds.axes[j][2])
+            anc = ds.anchor[j] if ds.anchor is not None else None
+            match = match_xpoints_and_axis(psi_pred, R, Z, xa[j], bnd_t, anc)
+            sep_t = separatrix_pts(psi_true, R, Z, bnd_t, o_t)
+            sep_p = separatrix_pts(psi_pred, R, Z, match["bnd_p"], match["o_pred"]) \
+                if match["bnd_p"] is not None else None
+            return xpts_t, o_t, sep_t, match["xpt_pred"], match["o_pred"], sep_p
+        opt_t, xpt_t = critical.find_critical(R, Z, psi_true)
+        opt_p, xpt_p = critical.find_critical(R, Z, psi_pred)
+        lvl_t = 0.5 * (xpt_t[0][2] + xpt_t[1][2]) if len(xpt_t) >= 2 else None
+        lvl_p = 0.5 * (xpt_p[0][2] + xpt_p[1][2]) if len(xpt_p) >= 2 else None
+        sep_t = separatrix_points(psi_true, R, Z, lvl_t) if lvl_t else None
+        sep_p = separatrix_points(psi_pred, R, Z, lvl_p) if lvl_p else None
+        return xpt_t, opt_t, sep_t, xpt_p, opt_p, sep_p
+
     fig = plt.figure(figsize=(19.5, 11))
     gs = GridSpec(2, 5, width_ratios=[4.2, 4.2, 4.2, 0.35, 0.35],
-                  wspace=0.30, hspace=0.35)
+                  wspace=0.35, hspace=0.35)
     for row, idx, tag in ((0, i_best, "BEST"), (1, i_worst, "WORST")):
         ax_t = fig.add_subplot(gs[row, 0])
         ax_p = fig.add_subplot(gs[row, 1])
@@ -184,29 +271,27 @@ def main() -> None:
 
         psi_t, psi_p = predict_pair(model, ds, idx, device, stats)
         lvls = np.linspace(psi_t.min(), psi_t.max(), 16)
-        try:
-            opt_t, xpt_t = critical.find_critical(R, Z, psi_t)
-            sep_t = 0.5 * (xpt_t[0][2] + xpt_t[1][2]) if len(xpt_t) >= 2 else None
-        except Exception:
-            opt_t, xpt_t, sep_t = None, None, None
-        try:
-            opt_p, xpt_p = critical.find_critical(R, Z, psi_p)
-            sep_p = 0.5 * (xpt_p[0][2] + xpt_p[1][2]) if len(xpt_p) >= 2 else None
-        except Exception:
-            opt_p, xpt_p, sep_p = None, None, None
+        xpt_t, o_t, sep_t, xpt_p, o_p, sep_p = fig1_geoms(psi_p, psi_t, ds.indices[idx])
 
         plot_field(ax_t, R, Z, psi_t, lvls, f"{tag} # {idx}  |  freegs truth ψ (Wb)",
-                   xpt_t, opt_t, sep_t)
+                   xpt_t, o_t, sep_t, wall_r, wall_z, coils)
         cf = plot_field(ax_p, R, Z, psi_p, lvls, f"FNO prediction ψ (Wb)",
-                        xpt_p, opt_p, sep_p)
+                        xpt_p, o_p, sep_p, wall_r, wall_z, coils)
         # both psi panels share one colorbar, placed in its own column on the
         # right (never overlapping the panels)
         cb_psi = fig.colorbar(cf, cax=cax_psi, label="ψ (Wb)")
         fmt_cbar(cb_psi)
 
         diff = np.abs(psi_p - psi_t)
+        ax_d.set_aspect("equal")
         im = ax_d.imshow(diff, extent=[R.min(), R.max(), Z.min(), Z.max()],
                          origin="lower", cmap="magma")
+        if coils:
+            for r, z, _ in coils:
+                ax_d.plot(r, z, "s", ms=6, color="#b30", mec="w", mew=0.6)
+        if wall_r is not None:
+            ax_d.plot(np.append(wall_r, wall_r[0]), np.append(wall_z, wall_z[0]),
+                      "k-", lw=1.8)
         if xpt_t:
             for r, z, _ in xpt_t:
                 ax_d.plot(r, z, "wx", markersize=9, markeredgewidth=2)
@@ -218,9 +303,10 @@ def main() -> None:
         ax_d.set_xlabel("R (m)")
         ax_d.set_ylabel("Z (m)")
     fig.suptitle(f"{args.title} — best & worst test samples\n"
-                 "white X = X-points, white circle = O-point, white contour = separatrix; "
+                 "white X = separatrix X-point, white circle = magnetic axis, white line = separatrix; "
+                 "red squares = coils, black line = wall (aspect equal: R and Z on the same scale). "
                  "left colorbar = |Δψ|, right colorbar = shared ψ scale (both rows)",
-                 fontsize=12)
+                 fontsize=11)
     fig.savefig(out_dir / "fig1_best_worst_psi.png", dpi=150)
     plt.close(fig)
     print(f"  saved fig1_best_worst_psi.png")
@@ -276,9 +362,13 @@ def main() -> None:
     # ---- fig 3: geometry statistics ----
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))
     ax = axes[0, 0]
+    # SN samples have no upper X-point (x_up = NaN) and are skipped by scatter;
+    # axis limit from P95 so a few non-localizable samples do not stretch it
     sc = ax.scatter(rows["x_up_cm"], rows["x_lo_cm"], c=rows["rel_l2_pct"],
                     cmap="viridis", s=18, alpha=0.8)
-    lim = np.nanmax([np.nanmax(rows["x_up_cm"]), np.nanmax(rows["x_lo_cm"])]) * 1.05
+    all_x = np.concatenate([rows["x_up_cm"], rows["x_lo_cm"]])
+    n_xok = int(np.isfinite(all_x).sum())
+    lim = 1.3 * max(1.0, float(np.nanpercentile(all_x, 95)))
     ax.plot([0, lim], [0, lim], "k--", lw=0.8)
     ax.axvline(PAPER["x_up_cm"], color="red", ls=":", label="paper mean")
     ax.axhline(PAPER["x_lo_cm"], color="red", ls=":")
@@ -288,7 +378,7 @@ def main() -> None:
     ax.set_ylabel("lower X-point error (cm)")
     fig.colorbar(sc, ax=ax, label="rel L2 (%)")
     ax.legend(fontsize=8)
-    ax.set_title("X-point localization errors (per sample)")
+    ax.set_title(f"X-point localization errors (n={n_xok} localizable / {n_eval})")
 
     for pos, key, title, ref in (
             ((0, 1), "sep_mean_cm", "separatrix mean distance", PAPER["sep_mean_cm"]),

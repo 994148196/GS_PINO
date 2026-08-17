@@ -26,6 +26,12 @@
 | 专职 DN → SN test（外推） | 253.4 | 1.02e-1 | 2.271 |
 | 专职 SN → DN test（外推） | 4.0e8 | 1.84e5 | 1024.5 |
 
+几何指标（v2，自身 test；外推行不可用 → NaN 诚实报告）：DN x_lo/x_up
+2.14/1.91 cm、sep_mean 0.40 cm、sep 面积 0.47%、O 点 0.34 cm；SN x_lo
+0.97 cm（x_up NaN）、sep_mean 0.34 cm、sep 面积 0.33%、O 点 0.42 cm。
+旧版 sep_mean 25.6/2.0 cm 是 find_critical 假鞍点配对的诊断伪差
+（exp008 README §5.3）。
+
 ## 4. 解读
 
 1. **专职 > 混合（自身配置）**：DN 0.492 vs 0.667、SN 0.953 vs 1.203——
