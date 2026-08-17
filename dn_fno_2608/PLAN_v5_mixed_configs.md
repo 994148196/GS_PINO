@@ -21,7 +21,11 @@
 > - ✅ **exp009 分开（xa 13ch）**：专职 DN 0.492% / 专职 SN 0.953%；
 >   交叉外推崩溃（DN→SN 253%、SN→DN 4.0e8%）——**混合训练是跨位形泛化
 >   的必要条件，代价 +26~35%**
-> - ✅ 文档全套：exp008/exp009 README（结果/结论/偏差）+ notes + figures +
+> - ✅ **config 反事实 + exp010 消融（用户提问引发）**：翻转 config 标签
+>   → 54×/23× 崩溃（模型在用标签）；去掉 config（exp010 13ch）后两桶
+>   0.611%/1.148% 仍健康且略优——**模型能自推断位形（up 占位足够），
+>   config 通道冗余，部署无需位形标签**（exp008 notes §4b、exp010 全套）
+> - ✅ 文档全套：exp008/009/010 README（结果/结论/偏差）+ notes + figures +
 >   analysis/config_buckets.json + EXPERIMENTS.md/experiments 台账更新
 > - v6 预留：snowflake（freegs_snow fork 二阶约束，MASTU_simple）与 limiter
 >   （fork 23-diiid-limiter.py 两步法，DIIID 域 R∈[0.7,2.5] 需全链域适配），
