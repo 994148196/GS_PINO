@@ -6,7 +6,9 @@
 > 方向（用户拍板）：**混合位形先做 DN+SN**，真实装置用 **MAST**，数据集**按配置分开
 > 生成**（`dn/`、`sn/` 子目录，后续可只用一种或混合训练）
 > 可行性探针报告：[PLAN_v5_mixed_configs.md](../PLAN_v5_mixed_configs.md)
-> 用途：exp008（混合训练，config 输入）与 exp009（专职单一位形对照）的数据
+> 用途：exp008（混合训练，config 输入）、exp009（专职单一位形对照）、
+> exp010（无 config 消融）、exp011（coil 电流输入端到端，coil_currents/
+> greens 字段）的数据
 
 ## 1. 与 data_v4 的差异
 

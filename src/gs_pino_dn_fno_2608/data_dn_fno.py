@@ -144,12 +144,31 @@ class DNFnoDataset(Dataset):
         # ground-truth geometry (data_v4+: xpts_actual = separatrix X-points
         # (N, n_xpt, 3) with psi, o_point = magnetic axis (N, 3)); None for the
         # paper data/ & data_v2 sets (evaluate/visualize fall back to
-        # find_critical pairing there)
+        # find_critical pairing there). xpts_actual row count varies by config
+        # (DN 2 vs SN 1) — mixed concatenation NaN-pads to the max row count
+        # (missing rows -> None in the v2 pairing -> NaN geometry, honest)
+        def _load_many_pad(key: str) -> np.ndarray:
+            parts = []
+            for p in paths:
+                with np.load(p) as d:
+                    parts.append(d[key])
+            max_rows = max(a.shape[1] for a in parts)
+            out = []
+            for a in parts:
+                if a.shape[1] < max_rows:
+                    pad = np.full((a.shape[0], max_rows, a.shape[2]), np.nan,
+                                  dtype=a.dtype)
+                    pad[:, :a.shape[1]] = a
+                    out.append(pad)
+                else:
+                    out.append(a)
+            return np.concatenate(out, axis=0)
+
         self.xpts_actual = None
         self.o_point = None
         with np.load(paths[0]) as d:
             if "xpts_actual" in d.files and "o_point" in d.files:
-                self.xpts_actual = _load_many("xpts_actual").astype(np.float32)
+                self.xpts_actual = _load_many_pad("xpts_actual").astype(np.float32)
                 self.o_point = _load_many("o_point").astype(np.float32)
         self.n_full = len(self.psi_total)
 

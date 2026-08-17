@@ -38,6 +38,7 @@ import numpy as np
 import torch
 
 from gs_pino_dn_fno_2608.data_dn_fno import DNFnoDataset
+from gs_pino_dn_fno_2608.data_dn_fno_coils import DNFnoDatasetCoils
 from gs_pino_dn_fno_2608.model_dn_fno import build_model
 
 MU0 = 4.0 * np.pi * 1e-7
@@ -249,6 +250,9 @@ def match_xpoints_and_axis(psi_pred: np.ndarray, R: np.ndarray, Z: np.ndarray,
     pairs = []                       # ("global", idx) | ("local", (r,z,psi)) | None
     avail = np.ones(len(arr), dtype=bool)  # each global candidate used once
     for t in xpts_t:
+        if not np.isfinite(t).all():  # NaN-padded row (mixed DN+SN dataset:
+            pairs.append(None)        # this X-point does not exist in the sample)
+            continue
         d = np.linalg.norm(arr[:, :2] - t, axis=1)
         d[(arr[:, 2] < psi_bndry_true - EPS) | ~avail] = np.inf
         j = int(np.argmin(d))
@@ -283,7 +287,7 @@ def match_xpoints_and_axis(psi_pred: np.ndarray, R: np.ndarray, Z: np.ndarray,
             out["xpt_pred"].append((float(arr[j[1], 0]), float(arr[j[1], 1]), float(arr[j[1], 2])))
 
     # magnetic axis: highest-psi optimum inside (r_lo, r_anc) x |z| < |z_lo|
-    i_lo = int(np.argmin(xpts_t[:, 1]))                              # lower X-point
+    i_lo = int(np.nanargmin(xpts_t[:, 1]))                           # lower X-point (NaN-padded rows ignored)
     r_lo, z_lo = xpts_t[i_lo]
     r_anc = float(anchor[0]) if anchor is not None else float(xpts_t[:, 0].max())
     pad = 0.3
@@ -430,8 +434,14 @@ def main() -> None:
 
     use_anchor = ckpt.get("input_mode", "xpoints") == "xa"
     use_config = bool(ckpt.get("config_input", False))
-    ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=use_anchor,
-                      use_config=use_config)
+    if ckpt.get("input_mode", "xpoints") == "coils":
+        # exp011: coil-current dataset (18ch on MAST); ground-truth geometry
+        # (xpts_actual / o_point) is loaded by DNFnoDatasetCoils, so the v2
+        # geometry metrics below work unchanged
+        ds = DNFnoDatasetCoils(args.test_data, stats=stats)
+    else:
+        ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=use_anchor,
+                          use_config=use_config)
     n_eval = min(len(ds), args.max_samples) if args.max_samples else len(ds)
 
     print(f"\n{'='*70}")

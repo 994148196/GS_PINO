@@ -30,6 +30,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from gs_pino_dn_fno_2608.data_dn_fno import DNFnoDataset, compute_stats, nested_train_indices, rel_l2_normalized
+from gs_pino_dn_fno_2608.data_dn_fno_coils import DNFnoDatasetCoils
 from gs_pino_dn_fno_2608.model_dn_fno import build_model
 
 
@@ -77,10 +78,13 @@ def main() -> None:
                          "and spawn workers deadlock under CPU contention)")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--input-mode", choices=["xpoints", "xa"], default="xpoints",
+    ap.add_argument("--input-mode", choices=["xpoints", "xa", "coils"], default="xpoints",
                     help="'xa' (data_v3): append the 2 sampled isoflux-anchor "
-                         "coordinates -> 13 channels; default 'xpoints' keeps "
-                         "9/11-channel behavior")
+                         "coordinates -> 13 channels; 'coils' (data_v5 exp011): "
+                         "control-coil currents instead of X-point/anchor "
+                         "coordinates -> 18 channels on MAST (R, Z + 5 params + "
+                         "11 coil currents); default 'xpoints' keeps 9/11-channel "
+                         "behavior")
     ap.add_argument("--config-input", action="store_true",
                     help="data_v5 mixed-config training: append the 1-channel "
                          "config code (0=DN, 1=SN) to the scalars (requires "
@@ -89,6 +93,7 @@ def main() -> None:
 
     use_anchor = args.input_mode == "xa"
     use_config = args.config_input
+    use_coils = args.input_mode == "coils"
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     set_seed(args.seed)
@@ -100,15 +105,22 @@ def main() -> None:
     # mixed-config: dn.npz,sn.npz); normalization stats come from the FULL
     # concatenated train pool (kept identical across all scaling-study N so
     # input representations are comparable)
-    train_ds = DNFnoDataset(args.train_data, stats=None, use_anchor=use_anchor,
-                            use_config=use_config)
-    stats = train_ds.stats
-    train_idx = nested_train_indices(train_ds.n_full, args.n_train, args.perm_seed)
+    if use_coils:  # exp011: coil-current scalars, no X-point/anchor/config
+        train_ds = DNFnoDatasetCoils(args.train_data, stats=None)
+        stats = train_ds.stats
+        train_idx = nested_train_indices(train_ds.n_full, args.n_train, args.perm_seed)
+        train_ds = DNFnoDatasetCoils(args.train_data, stats=stats, indices=train_idx)
+        val_ds = DNFnoDatasetCoils(args.val_data, stats=stats)
+    else:
+        train_ds = DNFnoDataset(args.train_data, stats=None, use_anchor=use_anchor,
+                                use_config=use_config)
+        stats = train_ds.stats
+        train_idx = nested_train_indices(train_ds.n_full, args.n_train, args.perm_seed)
 
-    train_ds = DNFnoDataset(args.train_data, stats=stats, indices=train_idx,
-                            use_anchor=use_anchor, use_config=use_config)
-    val_ds = DNFnoDataset(args.val_data, stats=stats, use_anchor=use_anchor,
-                          use_config=use_config)
+        train_ds = DNFnoDataset(args.train_data, stats=stats, indices=train_idx,
+                                use_anchor=use_anchor, use_config=use_config)
+        val_ds = DNFnoDataset(args.val_data, stats=stats, use_anchor=use_anchor,
+                              use_config=use_config)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                               num_workers=args.workers, pin_memory=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
@@ -195,7 +207,7 @@ def main() -> None:
         "input_mode": args.input_mode,
         "config_input": args.config_input,
         "stats": {k: (v.tolist() if hasattr(v, "tolist") else float(v))
-                  for k, v in stats.items()},
+                  for k, v in stats.items() if k not in ("input_mode", "config_input")},
     }, out_dir / "best.pt")
     with open(out_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)

@@ -91,6 +91,7 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 | exp008_mixed_configs | data_v5 混合训练（DN+SN 拼接 + config 1ch，14ch），N=500 | DN桶 0.667% / SN桶 1.203% / 整体 0.935% | **混合训练可行**：两桶都健康（GS 0.986、find_critical 0/1000）；代价 +26~35% vs 专职；config 通道有效利用（专职跨配置外推崩溃见 exp009） |
 | exp009_split_configs | data_v5 专职单一位形（DN-only / SN-only，13ch），N=500 | DN 0.492% / SN 0.953% | 专职自身最优；**跨配置外推崩溃**（DN→SN 253%、SN→DN 4.0e8%）——单一位形训练无跨位形泛化，混合训练是必要条件 |
 | exp010_mixed_no_config | data_v5 混合训练**无 config 通道**（13ch 消融），N=500 | DN 0.611% / SN 1.148% | **模型能自推断位形**：仅靠 up=(0,0) 占位结构区分 DN/SN，两桶健康且略优于 exp008（+config）；config 通道冗余可删（exp008 反事实：翻转 config 54×/23× 崩溃——用了≠必需） |
+| exp011_coil_input_v5 | data_v5 混合训练 **coil 电流输入**（R,Z+5 params+11 线圈电流 18ch，无 X点/锚点/config），N=500 | DN 0.841% / SN 0.948% / 整体 0.894% | **端到端 psi 生成**：只给可测量量直接出物理正确的场，无需显式位形/拓扑信息（位形识别为隐含能力，信息完全由 11 线圈电流承载）；SN 桶反超 xa 输入（0.948 vs 1.148），整体略优于 exp008；真实装置可测输入直接可用 |
 
 > 几何指标 v2（2026-08-17）：exp008/009/010 已按"真值基准 X 点配对 + 射线法
 > 分离面"重评估（旧版 sep_mean 数十 cm 为 find_critical 假鞍点伪差），几何
