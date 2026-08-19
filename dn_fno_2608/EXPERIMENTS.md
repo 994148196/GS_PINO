@@ -24,7 +24,12 @@ snow_double/limiter，129²，21ch = R,Z + 5 参数 + 14 线圈电流，separabi
 约束位形最优），DN/SN 桶 3.6%/9.0% 明显偏高（129² 与 65² 不可直接比；**SN 还有真值形态
 质量问题：磁轴系统性偏下、上瓣薄，极端样本中平面在分离面外**，2026-08-19
 用户发现并记录于 exp012 README），limiter 桶几何指标按设计为 NaN（无分离面
-X 点）。
+X 点）；**最后把 GS 方程物理残差加进训练**（exp101/102，PINO 阶段，data_v5/dn）：
+做法1 单阶段把预测场 Δ\* 拉到数据 RHS 上（test rel L2 0.72%，GS 残差降到真值
+FD 下限的 3.3×，精度不降反升）；做法2 两阶段学习 psi↔J 自洽（阶段1 监督
+psi_plasma+J，e29 达标切阶段2 加自洽残差 + Ip 约束，物理权重 30-epoch 预热修复
+首版阶段2 爆炸）：test 0.80%、Ip 误差 0.21%、mask 内 J 1.36%——**纯数据管线拿
+不到的自洽性与 Ip 约束，物理损失提供**。
 
 ---
 
@@ -97,6 +102,8 @@ X 点）。
 | exp010 | data_v5 | 混合 DN+SN **无 config**：X点+锚点 13ch | DN桶 0.611% / SN桶 1.148% | — | **模型能自推断位形**：仅靠 up=(0,0) 占位结构区分，两桶健康且略优于 exp008（+config）——config 通道冗余可删，输入物理自包含 |
 | exp011 | data_v5 | 混合 DN+SN **coil 电流**：R,Z+5 params+11 线圈电流 18ch（无 X点/锚点/config） | DN桶 0.841% / SN桶 **0.948%** / 整体 0.894% | — | **端到端 psi 生成**：只给可测量量（电流+工程参数）直接出物理正确的场，无需任何显式位形/拓扑信息；位形识别是隐含能力（信息完全由 11 线圈电流承载）；SN 桶反超 xa（0.948 < 1.148），整体略优于 exp008 |
 | exp012 | data_v6 | 混合 5 位形 **coil 电流**：R,Z+5 params+14 线圈电流 21ch（`--no-config-channel`，separability 证实电流识别位形） | 整体 3.435% / dn 3.618% / sn 8.988% / snow_single 1.487% / snow_double 1.307% / limiter 1.776% | —（跨机器跨网格，仅参考） | **端到端扩展到五配置**：snowflake（雪点二阶约束）与 limiter 位形 1.3–1.8% 健康；dn/sn 桶偏高（SN 收敛困难、129² 噪声大）；limiter 几何指标按设计 NaN（无分离面 X 点） |
+| exp101 | data_v5/dn | **FNO + GS 物理残差（做法1 单阶段）**：R,Z+5 params+11 线圈电流 18ch，`L = MSE(psi_plasma) + w_pde·‖Δ\*ψ_pred + μ0RJ_data‖²`；coil 分离（网络只预测 psi_plasma，psi_total 由 greens 解析加回） | rel_l2_total **0.72%**（plasma 0.81%）｜ GS 残差 core pred **1.33%** vs truth 0.40% | exp011 DN 桶 0.84（同口径 psi_total） | **纯 MSE 加 PDE 项精度不降反升**（0.72 < 0.84），预测场 GS 残差降到真值有限差分下限的 3.3×；残差 RHS 是冻结数据（J 不随预测自洽），仅输出侧平滑正则 |
+| exp102 | data_v5/dn | **FNO + GS 物理残差（做法2 两阶段）**：同 18ch；阶段1 监督 psi_plasma+J 两通道，阶段2 加**自洽**残差（Δ\*ψ_pred + μ0RJ_pred）+ Ip 约束；阶段1 val rel L2<3% 自动切换（e29），物理权重 30-epoch 线性 ramp（修复首版阶段2爆炸） | rel_l2_total **0.80%**（plasma 0.90%）｜ GS 残差 core 1.51% vs 0.40% ｜ **Ip 误差 0.21%** ｜ **J mask 内 1.36%** | exp101（做法1） | **psi↔J 自洽成立**：J ≈ −Δ\*ψ/μ0R（J 1.36% + GS 1.51% 同时成立），Ip 积分约束有效；vs exp101 多 0.08 精度代价换 J 通道 + 自洽 + Ip（做法1 给不了）；全网格 J 36.9% 是 mask 外谱振铃假指标 |
 
 v3→v4 恢复倍数（同模型同 N）：A 9.2× ｜ A' **49×** ｜ B 25×。
 exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST）与位形
@@ -177,7 +184,10 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 - **混合代价归因**：+26~35% 是共享容量代价（exp010 已排除 config 通道
   因素）；可用 N=2000 或分位形独立归一化继续消融。
 - **PINO 阶段**：PLAN.md 为物理约束训练预留了全部字段（greens/dpdpsi/
-  FdFdpsi），尚未启用。
+  FdFdpsi），**已启用**（exp101/102，`src/gs_pino_fno_phys/`，data_v5/dn，
+  做法1 RHS 残差 + 做法2 两阶段自洽 + Ip 约束，均完成且文档化）。后续方向：
+  全量 N=2000（预估 ~1h/实验）、`--pde-mask-erode` 边界差分消融、做法1/2
+  在 data_v6 五配置上的推广（exp101/102 是单一位形 DN-only）。
 - **延迟/部署**：复现阶段已证 GPU 前向 1.6 ms（665× vs freegs）；改进模型
   结构未变，延迟结论直接沿用。
 
@@ -193,7 +203,8 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 | [data_v5/README.md](data_v5/README.md) | data_v5：MAST DN/SN 差异、SN 判据与磁轴适配、探针/全量统计、偏差记录 |
 | [PLAN_v5_mixed_configs.md](PLAN_v5_mixed_configs.md) | data_v5 可行性探针报告 + 实施计划（含 v6 snow/limiter 路线） |
 | [experiments/README.md](experiments/README.md) | 实验目录组织约定 + 一页台账 |
-| exp001–exp011/ | 每实验 README（设计/结果/结论）+ notes（解读/偏差记录）+ metrics.json |
+| exp001–exp012/ | 每实验 README（设计/结果/结论）+ notes（解读/偏差记录）+ metrics.json |
+| exp101/102_pino_*_n500/ | FNO + 物理残差（PINO 阶段）：做法1 rhs（exp101）/ 做法2 两阶段（exp102）各自 README（18ch 通道表 + 结果表）+ metrics.json + figures/（exp011 风格 fig1/2/3 + stats_per_sample.json）+ train/eval.log |
 
 ## 8. 可视化产物
 
@@ -217,6 +228,8 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 | exp009 | model_dn_13ch/figures/ + model_sn_13ch/figures/ | 专职 DN / SN 各一套 |
 | exp010 | model_a13ch_xa_mix/figures_dn/ + figures_sn/ | 消融（无 config）混合模型在 DN / SN test 各一套 |
 | exp011 | model_b18ch_coils_mix/figures_dn/ + figures_sn/ | coil 18ch 端到端混合模型在 DN / SN test 各一套（fig1 含 MAST 装置/11 线圈） |
+| exp101 | exp101_pino_rhs_n500/figures/ | exp011 风格 fig1/2/3 + stats_per_sample.json（fig1 = best/worst psi_total 真值/预测/|diff|，装置线圈 + 等高线 + 分离面 + X 点 + 磁轴；fig3 = 几何误差） |
+| exp102 | exp102_pino_twostage_n500/figures/ | 同 exp101，fig1 追加 J 行、fig2 追加 Ip/J 直方图 |
 
 示例（v4 三模型，test 494）：A' best #337 0.136% / worst #124 3.17%；
 B best #39 0.147% / worst #411 3.44%；A best #22 0.444% / worst #126 13.45%。
