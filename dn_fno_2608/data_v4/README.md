@@ -1,144 +1,137 @@
-# data_v4 数据集说明（物理合理性接受约束 + 可行区采样）
+# data_v4 — 可行区采样 + 物理合理性接受约束数据集（TestTokamak DN）
 
 > 生成日期：2026-08-14
-> 代码：`generate_dn_dataset.py`（data_v4 全部新参数默认关，v3/基线路径字节级不变）
-> 用途：修复 data_v3 的约束不可达缺陷（isoflux 残差 mean 0.50 / max 2.10），
-> 验证"约束可达 + 可行区采样"下三模型复测（exp006/exp007）的恢复程度
-> 取代：data_v3（2026-08-14 已删除；复现脚本 `scripts/run_generate_v3.sh` 保留，
-> 其局限分析见 exp004 notes §5b 与本文件 §2）
+> 用途：exp006/exp007 数据；修复 data_v3 的 isoflux 约束不可达缺陷
+> （残差 mean 0.50/max 2.10 → mean 0.172/max ≤0.35）
+> 取代：data_v3（已删除；复现脚本 `scripts/run_generate_v3.sh` 保留）
 
-## 1. 与 data_v3 的差异
+## 1. 数据集速览
 
-| 项 | data_v3 | **data_v4** |
-|---|---|---|
-| X 点中心 | (1.1, ±0.6) | **(1.2, ±0.6)**（`--xpt-r0 1.2`） |
-| X 点抖动 | R 与 Z 同 ±0.20 m | **R ±0.10、Z ±0.15 m**（`--xpt-jitter 0.10 --xpt-jitter-z 0.15`） |
-| 锚点 | R~U[1.2,1.8] × Z~U[-0.3,0.3] | **中平面 (R, 0.0)，R~U[1.35,1.65]**（`--anchor-midplane`，外中平面分离面半径） |
-| 接受约束 | 收敛 + \|ΔIp\|≤10% + ≥2 X点 + L/Beta0 | **+ 7 项物理合理性检查**（见 §3） |
-| 诊断字段 | anchor | **+ 8 个约束诊断字段**（`--save-constraint-diag`，见 §4） |
-| 规模 | 3000 | 3000（train 2000 / val 500 / test 500） |
+| 项 | 值 |
+|---|---|
+| 机器 | TestTokamak（同 data/） |
+| 位形 | 双零 DN |
+| 网格 | 65² |
+| 规模 | **2972/3000（99.1%）**：train 1982（seed 123）/ val 496（seed 456）/ test 494（seed 789） |
+| 输入通道 | **11ch**（X点）/ **13ch**（X点+锚点）/ **11ch**（coil 电流）——三种模式（§3） |
+| 目标 | `psi_total`（65²，z-score） |
+| 新增 | 8 个约束诊断字段（`--save-constraint-diag`，§2）+ 可行区采样 + 7 项接受约束（§4） |
 
-采样范围选择依据（线圈四边形 = P1L/P1U (1.0,±1.1) + P2L/P2U (1.75,±0.6) 的凸包）：
-- X 点 R∈[1.10,1.30]：中心 1.2 使最差点距左边缘 ≥0.10 m（v3 的 0.9 端大幅超出）；
-- X 点 Z0∈[0.45,0.75]：保持离墙与四边形上下边缘足够远；
-- 锚点 R∈[1.35,1.65]：四边形 Z=0 切片为 [1.0,1.75]（留 ≥0.1 余量），且恒 > X 点
-  R 上限 1.30 → 磁轴必然夹在 X 点与锚点之间（排除"锚点内移"退化类）。
+## 2. 字段说明（npz keys）
 
-## 2. 阈值校准（关键步骤）
-
-所有接受阈值先用**已知健康数据 data_v2**（500 val 样本）校准，要求 v2 几乎全过：
-
-| 检查 | 初版阈值 | v2 通过率 | 校准后 | v2 通过率 |
-|---|---|---|---|---|
-| 四边形余量 | 0.10 m | **1.6%**（X 点 R0=1.1 距左边缘标称 0.1，抖动即跌破；且初版按 tokamak 线圈顺序组多边形，是自交叉蝴蝶结，距离算错） | **0.05 m** | 100% |
-| isoflux 残差 | 0.25 | 94.0%（v2 p95=0.256） | **0.35** | 99.2%（仅 4 个 v2 固有离群） |
-| 轴在三角形内 | — | 100% | 0.10 m（原值） | — |
-| 墙内 / 锚点-X点距离 / core 深度 | — | 100% | 原值 | — |
-
-校准结论：初版 0.10 m 余量对 v2 自身即 98% 拒绝 → 余量降到 0.05（v4 X 点 R∈[1.10,1.30]
-最差 0.10 仍安全）；isoflux 0.25 对 v2 p95 边缘 → 0.35（v3 尾部 p95≈1.1 仍被砍大半）。
-
-## 3. 7 项接受约束（全部在 `_solve_one` 内，每项一个 CLI 开关）
-
-1. **磁轴（O 点）在三角形(lo, up, 锚点)内**：重心坐标法（strict + eps），物理含义
-    = 等离子体主体被两个 X 点与锚点包围；
-2. **三点在线圈四边形凸包内且距边 ≥ 余量**：`--coil-margin 0.05`（线圈中心按极角排
-   凸包顺序；ShapedCoil 取形状点均值）；
-3. **三点在墙内**：`--require-wall`（tokamak.wall 多边形，射线法）；
-4. **isoflux 残差 ≤ 0.35 × core**：`--max-isoflux-residual 0.35`，core = psi_axis −
-   0.5(psi(xpt[0])+psi(xpt[1]))（与保存的 psi_bndry 同定义）。4 线圈对 6 约束是
-   过定系统，Tikhonov 定点只满足 Aᵀb=0，残差方向不可达——v3 缺陷根源，此处显式
-   过滤；
-5. **X 点偏差 ≤ 0.10 m**：`--max-xpt-deviation 0.10`，find_critical 实际 X 点与目标
-   最近距离（网格步长 R≈0.03/Z≈0.06，0.1 合理）；
-6. **锚点-两 X 点距离 ≥ 0.15 m**：`--min-anchor-xpt-dist 0.15`（防近退化区）；
-7. **core 深度 ≥ 0.005 Wb**：`--min-core-depth 0.005`（防浅剖面）。
-
-## 4. 字段说明
-
-data_v3 全部字段（含 `anchor`）+ **8 个约束诊断字段**（`--save-constraint-diag`）：
+data_v3 全部字段（含 `anchor`）+ 8 个约束诊断字段（仅 `--save-constraint-diag`
+时生成，merge 对缺字段容错）：
 
 | 字段 | 形状 | 内容 |
 |---|---|---|
 | `xpts_actual` | (N,2,3) | find_critical 实际 X 点 [R,Z,psi]，按目标 lo/up 贪婪配对排序 |
-| `o_point` | (N,3) | 实际 O 点 [R,Z,psi]（axes 仅有 psi_bndry 与轴位置，无 psi） |
+| `o_point` | (N,3) | 实际 O 点 [R,Z,psi]（axes 只有 psi_bndry 与轴位置，无 psi） |
 | `xpt_constraint_res` | (N,4) | 目标处 Br_lo, Bz_lo, Br_up, Bz_up（T）——X 点约束残差 |
 | `isoflux_res` | (N,2) | psi(lo)−psi(锚点), psi(up)−psi(锚点)（Wb） |
 | `psi_at_constraints` | (N,3) | psi(lo), psi(up), psi(锚点)（Wb） |
-| `n_iter` | (N,1) | Picard 迭代数（`convergenceInfo=True` 历史长度） |
+| `n_iter` | (N,1) | Picard 迭代数 |
 | `psi_relchange_final` | (N,1) | 末次 psi 相对变化（收敛样本 ≤ rtol=1e-3） |
+| `anchor` | (N,2) | isoflux 锚点 [R,Z]，中平面 Z≡0、R~U[1.35,1.65] |
 
-意义：超定系统的约束残差/实际临界点信息**无法从 4 线圈电流恢复**，随样本落盘，
-供下游按真实残差分桶分析、或做"残差修正模型"（把不可达信息作为输入/目标）。
+其余字段同 data_v2（`params` (5)、`coil_currents` (4)、`greens` (4×65×65)、
+`x_coords`、`psi_total`/`psi_plasma*`/`R`/`Z`/`mask`/`dpdpsi`/`FdFdpsi`/`axes` 等）。
 
-## 5. 生成命令
+**诊断字段意义**：超定系统（4 线圈对 6 约束）的约束残差/实际临界点信息**无法从
+4 线圈电流恢复**，随样本落盘供下游按真实残差分桶分析、或做"残差修正模型"。
+
+## 3. 输入通道明细（三种模式，exp006/exp007 用）
+
+| # | 11ch X点（exp006-A） | 13ch X点+锚点（exp006-A'） | 11ch coil（exp007-B） |
+|---|---|---|---|
+| 1–2 | R, Z 网格 | R, Z 网格 | R, Z 网格 |
+| 3–7 | Ip, paxis, fvac, alpha_m, alpha_n | Ip, paxis, fvac, alpha_m, alpha_n | Ip, paxis, fvac, alpha_m, alpha_n |
+| 8–11 | R_lo, Z_lo, R_up, Z_up | R_lo, Z_lo, R_up, Z_up | I_P1L, I_P1U, I_P2L, I_P2U |
+| 12–13 | — | R_anc, Z_anc | — |
+
+归一化：R/Z 线性 [-1,1]；标量 z-score（训练集统计）。A' 的锚点 Z≡0 通道 std=0，
+数据集类分母 `np.maximum(std, 1e-8)` 防护 → 常量通道映射为 0。
+
+## 4. 生成设置
+
+### 4.1 采样范围（可行区，避开线圈四边形外/墙外）
+
+- X 点中心 (1.2, ±0.6)（`--xpt-r0 1.2`），抖动 R ±0.10 / Z ±0.15 m
+  （`--xpt-jitter 0.10 --xpt-jitter-z 0.15`）
+- 锚点：中平面 (R, 0.0)，R~U[1.35,1.65]（`--anchor-midplane`；恒 > X 点 R 上限
+  1.30 → 磁轴必然夹在 X 点与锚点之间，排除"锚点内移"退化类）
+- 参数范围同 data_v2（paxis/Ip/fvac/alpha_m/alpha_n 采样）
+
+### 4.2 7 项接受约束（全部在 `_solve_one` 内，每项一个 CLI 开关）
+
+1. **磁轴（O 点）在三角形(lo, up, 锚点)内**：重心坐标法（strict + eps）；
+2. **三点在线圈四边形凸包内且距边 ≥ 余量**：`--coil-margin 0.05`（极角凸包排序；
+   ShapedCoil 取形状点均值）；
+3. **三点在墙内**：`--require-wall`（射线法）；
+4. **isoflux 残差 ≤ 0.35 × core**：`--max-isoflux-residual 0.35`，core = psi_axis
+   − 0.5(psi(xpt[0])+psi(xpt[1]))（与 psi_bndry 同定义）——data_v3 缺陷根源，
+   此处显式过滤；
+5. **X 点偏差 ≤ 0.10 m**：`--max-xpt-deviation 0.10`（网格步长 R≈0.03/Z≈0.06）；
+6. **锚点-两 X 点距离 ≥ 0.15 m**：`--min-anchor-xpt-dist 0.15`；
+7. **core 深度 ≥ 0.005 Wb**：`--min-core-depth 0.005`。
+
+### 4.3 阈值校准（用已知健康数据 data_v2 的 500 val 样本）
+
+| 检查 | 初版 | v2 通过率 | 校准后 | 依据 |
+|---|---|---|---|---|
+| 四边形余量 | 0.10 m | **1.6%**（自交叉蝴蝶结 bug + 抖动即跌破） | **0.05 m** | 极角凸包排序修复 + 最差 0.10 仍安全 |
+| isoflux 残差 | 0.25 | 94.0%（v2 p95=0.256） | **0.35** | 99.2%（仅 4 个 v2 固有离群） |
+
+### 4.4 生成统计
+
+| split | seed | 接受 | 速率 |
+|---|---|---|---|
+| 探针 | 123 | 80/80 | 1.63 s/solve |
+| val | 456 | 496/500 | 1.36 s/solve |
+| test | 789 | 494/500 | 1.32 s/solve |
+| train | 123 | 1982/2000 | 1.3–1.4 s/solve |
+
+isoflux 残差 val：mean 0.172 / median 0.168 / p95 0.332 / max 0.350（阈值硬切）；
+X 点偏差 mean 0.012 / p95 0.028 / max 0.037；n_iter∈[10,43]。被拒样本均为 20 次
+重试仍不满足检查的**参数极值组合**（物理性拒绝，非随机发散）。
+
+## 5. 如何调用
 
 ```bash
 PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
-# 一键：bash dn_fno_2608/scripts/run_generate_v4.sh（探针先验证，再 val/test/train）
-"$PY" -u -m gs_pino_dn_fno_2608.generate_dn_dataset --split val --n-samples 500 --seed 456 \
-    --out-dir dn_fno_2608/data_v4 --chunk-size 500 --n-jobs 24 \
-    --alpha-sampling --xpt-r0 1.2 --xpt-jitter 0.10 --xpt-jitter-z 0.15 \
-    --isoflux-sampling --anchor-midplane --max-isoflux-residual 0.35 \
-    --max-xpt-deviation 0.10 --min-anchor-xpt-dist 0.15 --require-wall \
-    --coil-margin 0.05 --min-core-depth 0.005 --save-constraint-diag --max-retries 20
-# （test 500 seed 789、train 2000 seed 123 同理；--merge 后同命令）
+
+# 训练（一键链：bash dn_fno_2608/scripts/run_exp006_007_train.sh）
+"$PY" -u -m gs_pino_dn_fno_2608.train_dn_fno \
+  --train-data dn_fno_2608/data_v4/train.npz --val-data dn_fno_2608/data_v4/val.npz \
+  --n-train 500 --seed 1 --out-dir <out>                          # 11ch X点
+"$PY" -u -m gs_pino_dn_fno_2608.train_dn_fno --input-mode xa \
+  --train-data dn_fno_2608/data_v4/train.npz --val-data dn_fno_2608/data_v4/val.npz \
+  --n-train 500 --seed 1 --out-dir <out>                          # 13ch X点+锚点
+"$PY" -u -m gs_pino_dn_fno_2608.train_dn_fno_coils \
+  --train-data dn_fno_2608/data_v4/train.npz --val-data dn_fno_2608/data_v4/val.npz \
+  --n-train 500 --seed 1 --out-dir <out>                          # 11ch coil
+# 评估（evaluate_dn_fno / evaluate_dn_fno_coils 对应）
+# 锚点分桶分析：analyze_anchor_buckets（见 exp006 README §5）
 ```
 
-## 6. 生成统计
+## 6. 相关脚本（dn_fno_2608/scripts/）
 
-| split | seed | 目标 | 接受 | 墙钟 | 速率 |
-|---|---|---|---|---|---|
-| 探针 | 123 | 80 | 80/80 | 2m10s | 1.63 s/solve |
-| val | 456 | 500 | **496/500** | 11m20s | 1.36 s/solve |
-| test | 789 | 500 | **494/500** | 11m00s | 1.32 s/solve |
-| train | 123 | 2000 | **1982/2000** | 46m | 1.3–1.4 s/solve |
+| 脚本 | 用途 |
+|---|---|
+| `run_generate_v4.sh` | 全量生成（探针→val→test→train + 合并） |
+| `run_generate_v3.sh` | data_v3 复现（**数据已删除**，仅脚本保留参考） |
+| `run_exp004_005_train.sh` / `run_exp006_007_train.sh` | data_v3/data_v4 上三模型训练链 |
 
-合计 **2972/3000（99.1%）**。被拒样本均为 20 次重试仍不满足 7 项检查的
-参数极值组合（接受率与 v3 的 99.9% 相当，但 v4 的拒绝是**物理性**的——
-不可达约束/越界几何——而非随机发散）。
+## 7. 历史与偏差记录
 
-**isoflux 残差分布 vs v3**（val 500，`--save-constraint-diag`）：
-
-| 数据集 | mean | median | p95 | max | >0.35 占比 |
-|---|---|---|---|---|---|
-| data_v3 | 0.50 | 0.43 | 1.11 | 2.10 | 大量（>10% 占 93%） |
-| **data_v4 (val)** | **0.172** | **0.168** | **0.332** | **0.350** | **0%**（阈值硬切） |
-
-X 点偏差：mean 0.012 / p95 0.028 / max 0.037 m（阈值 0.10）。n_iter∈[10,43]、
-psi_relchange_final ≤7.3e-4 < rtol。三点四边形覆盖 496/496。
-
-## 7. 探针结果（80 样本，seed 123）
-
-| 指标 | 探针 | 目标 |
-|---|---|---|
-| 接受率 | 80/80（100%） | ≥60% |
-| isoflux 残差 mean / max | 0.177 / 0.337 | <0.25 / ≤0.35 |
-| X 点偏差 max | 0.033 m | ≤0.10 m |
-| 三点四边形覆盖 | 80/80 | 100% |
-| n_iter | [11, 29] | ≤50 |
-
-isoflux 残差 mean 0.177 ≈ data_v2 水平（0.133），v3 的 0.50 → 0.18，**约束不可达
-缺陷消除**。注意 X 点 R 分布呈现接受截断（max 1.246 < 1.30）：锚点贴 X 点/残差
-超阈的采样被滤掉，数据落在 4 线圈可达子集内——这正是 v4 的目的。
-
-## 8. 复现偏差记录
-
-1. 初版四边形余量 0.10 m + tokamak 线圈顺序多边形（自交叉蝴蝶结）→ 98% 误拒：
-   修复为极角凸包排序 + 余量 0.05（用 data_v2 校准，见 §2）；
-2. isoflux 残差阈值 0.25 → 0.35（v2 p95=0.256 校准）；
-3. 所有新 flag 默认关，`--xpt-jitter` 语义不变（R 向），新增 `--xpt-jitter-z`
-   （默认等于 R 向）→ v3 命令逐字节复现（回归验证通过）；
-4. 诊断字段仅 `--save-constraint-diag` 时保存，merge 对缺字段容错；
-5. 求解器在 `convergenceInfo=True` 时返回收敛历史，行为与默认调用一致。
-
-## 9. 三模型复测结果（exp006/exp007，N=500 seed 1，test 494）
-
-| 模型 | data_v3 test | **data_v4 test** | 恢复倍数 | 结论 |
-|---|---|---|---|---|
-| A（X点 11ch） | 31.09% | **3.38%** | 9.2× | 一对多退化仍在（7.7× vs A'），不再 100× |
-| A'（X点+锚点 13ch） | 21.72% | **0.442%** | 49× | **约束不可达是 exp004 退化主因**；回到 data_v2 水平 |
-| B（coil 11ch） | 12.47% | **0.499%** | 25× | 恢复到 data_v2 水平；A' ≥ B（exp005 优势为伪差） |
-
-详情与分桶见 [exp006/README.md](../experiments/exp006_xpoints_anchor_v4/README.md) /
-[exp007/README.md](../experiments/exp007_coil_input_v4/README.md)。
+1. **与 data_v3 差异**：X 点中心 (1.1,±0.6)→(1.2,±0.6)、抖动 ±0.20→R±0.10/Z±0.15、
+   锚点固定→中平面采样 R∈[1.35,1.65]、+7 项接受约束、+8 诊断字段；
+2. 初版四边形余量 0.10 m + tokamak 线圈顺序多边形（自交叉蝴蝶结，距离算错）→
+   98% 误拒：修复为极角凸包排序 + 余量 0.05（§4.3）；
+3. isoflux 残差阈值 0.25 → 0.35（v2 p95 校准）；
+4. 所有新 flag 默认关（v3 命令逐字节复现，回归验证通过）；
+5. 诊断字段仅 `--save-constraint-diag` 时保存；
+6. **三模型复测结果**（exp006/007，N=500 seed 1，test 494）：A（X点 11ch）
+   31.09%→**3.38%**（9.2×）、A'（X点+锚点 13ch）21.72%→**0.442%**（49×）、
+   B（coil 11ch）12.47%→**0.499%**（25×）——**约束不可达是 exp004/005 退化主因**；
+7. A' 训练 NaN 修复：锚点 Z≡0 → z-score 0/0 → 分母 `np.maximum(std, 1e-8)`
+   （data_dn_fno.py / data_dn_fno_coils.py，data_v2/v3 路径不受影响）。
