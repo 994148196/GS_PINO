@@ -25,7 +25,6 @@ dn_fno_2608/data_v5/
 ├── dn/  train.npz / val.npz / test.npz   # DN 配置（+ 分块目录，冗余可删）
 ├── sn/  train.npz / val.npz / test.npz   # SN 配置
 ├── _probe_mast_dn.json / _probe_mast_sn.json   # 探针结果
-└── _smoke_mix/                            # 冒烟产物
 ```
 
 后续可只用一种（专职）或逗号拼接混合（`dn/train.npz,sn/train.npz`）训练。

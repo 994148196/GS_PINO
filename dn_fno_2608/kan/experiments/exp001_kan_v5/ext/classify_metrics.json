@@ -1,0 +1,152 @@
+{
+  "title": "KAN-EXT | 830 ep | tol 4.9e-04 Wb | OOD n=1007 (in-hull 0)",
+  "calibration": {
+    "tol_Wb": 0.00048642729356093706,
+    "dn_gap_median_Wb": 0.06455066251881145,
+    "sn_gap_min_Wb": 0.0009728545871218741,
+    "in_dist": {
+      "dn": {
+        "n": 120,
+        "correct": 1,
+        "unclassified": 2
+      },
+      "sn": {
+        "n": 120,
+        "correct": 118,
+        "unclassified": 2
+      }
+    }
+  },
+  "ood": {
+    "confusion": [
+      [
+        239,
+        2
+      ],
+      [
+        285,
+        6
+      ]
+    ],
+    "n": 532,
+    "accuracy": 0.4605263157894737,
+    "precision": 0.75,
+    "recall": 0.020618556701030927,
+    "specificity": 0.991701244813278,
+    "n_in_hull": 0,
+    "n_extrap": 1007,
+    "n_unclassified": 475,
+    "per_config": {
+      "dn": {
+        "confusion": [
+          [
+            0,
+            0
+          ],
+          [
+            514,
+            6
+          ]
+        ],
+        "n": 520,
+        "accuracy": 0.011538461538461539,
+        "precision": 1.0,
+        "recall": 0.011538461538461539,
+        "specificity": 0.0
+      },
+      "sn": {
+        "confusion": [
+          [
+            485,
+            2
+          ],
+          [
+            0,
+            0
+          ]
+        ],
+        "n": 487,
+        "accuracy": 0.9958932238193019,
+        "precision": 0.0,
+        "recall": 0.0,
+        "specificity": 0.9958932238193019
+      }
+    }
+  },
+  "field_rel_l2_pct": {
+    "direct": NaN,
+    "extrap": 333.7550463067976
+  },
+  "distance_bins": [
+    {
+      "bin": 0,
+      "lo": 0.0,
+      "hi": 0.05,
+      "n": 44,
+      "n_misclass": 20,
+      "misclass_rate": 0.45454545454545453
+    },
+    {
+      "bin": 1,
+      "lo": 0.05,
+      "hi": 0.1,
+      "n": 90,
+      "n_misclass": 49,
+      "misclass_rate": 0.5444444444444444
+    },
+    {
+      "bin": 2,
+      "lo": 0.1,
+      "hi": 0.2,
+      "n": 134,
+      "n_misclass": 78,
+      "misclass_rate": 0.582089552238806
+    },
+    {
+      "bin": 3,
+      "lo": 0.2,
+      "hi": 0.35,
+      "n": 213,
+      "n_misclass": 116,
+      "misclass_rate": 0.5446009389671361
+    },
+    {
+      "bin": 4,
+      "lo": 0.35,
+      "hi": 0.5,
+      "n": 48,
+      "n_misclass": 21,
+      "misclass_rate": 0.4375
+    },
+    {
+      "bin": 5,
+      "lo": 0.5,
+      "hi": 1.0,
+      "n": 3,
+      "n_misclass": 3,
+      "misclass_rate": 1.0
+    },
+    {
+      "bin": 6,
+      "lo": 1.0,
+      "hi": 2.0,
+      "n": 0,
+      "n_misclass": 0,
+      "misclass_rate": null
+    },
+    {
+      "bin": 7,
+      "lo": 2.0,
+      "hi": null,
+      "n": 0,
+      "n_misclass": 0,
+      "misclass_rate": null
+    }
+  ],
+  "paper_reference": {
+    "accuracy": 89.1,
+    "precision": 72.1,
+    "recall": 98.9,
+    "specificity": 85.3
+  }
+}

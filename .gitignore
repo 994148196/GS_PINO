@@ -31,3 +31,6 @@ dn_fno_2608/data_v5/**
 !dn_fno_2608/data_v5/README.md
 dn_fno_2608/data_v6/**
 !dn_fno_2608/data_v6/README.md
+
+# KAN OOD 生成数据（可再生成，688MB 不入库）
+dn_fno_2608/kan/data_ood/**/*.npz

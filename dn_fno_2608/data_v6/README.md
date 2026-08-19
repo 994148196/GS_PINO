@@ -144,7 +144,6 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 | `plot_v6_examples.py` | 示例平衡图（psi 等高线 + 雪点/接触点/壁标记），物理确认用 | 参数见脚本头注释 |
 | `_backfill_v6_labels.py` | 旧 chunk 补写标注字段（wall_contact 等），生成脚本升级后不需要 | — |
 | `run_exp012_eval_vis.sh` | exp012 六桶评估 + 5 配置可视化一键 | `bash dn_fno_2608/scripts/run_exp012_eval_vis.sh` |
-| `_dbg_*.py` | 各次调试探针（未跟踪，不入 git；仓库清理时按需删除） | — |
 
 ## 7. 生成设置与复现
 

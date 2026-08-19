@@ -1,0 +1,12 @@
+{
+  "n_eval": 10,
+  "rel_l2_kan3_mean_pct": 19.8648239672184,
+  "rel_l2_sr_mean_pct": 68.09479081116123,
+  "sr_added_mean_pct": 48.22996684394283,
+  "sr_added_max_pct": 73.26790881712459,
+  "corr_sr_added_kan3_err": 0.320691621714437,
+  "latency_ms_full_grid": {
+    "symbolic_numpy": 9.517,
+    "torch_kan": 12.405
+  }
+}
