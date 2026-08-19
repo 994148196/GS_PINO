@@ -29,3 +29,5 @@ dn_fno_2608/data_v4/**
 dn_fno_2608/data_v4_probe/**
 dn_fno_2608/data_v5/**
 !dn_fno_2608/data_v5/README.md
+dn_fno_2608/data_v6/**
+!dn_fno_2608/data_v6/README.md

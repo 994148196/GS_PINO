@@ -89,6 +89,11 @@ def main() -> None:
                     help="data_v5 mixed-config training: append the 1-channel "
                          "config code (0=DN, 1=SN) to the scalars (requires "
                          "'config' in the dataset; exp008)")
+    ap.add_argument("--no-config-channel", action="store_true",
+                    help="coils mode only (exp012 data_v6): do NOT load the "
+                         "1-channel config code even when the npz has it "
+                         "(separability probe: 14 coil currents identify the "
+                         "configuration) -> 21ch instead of 22ch on MASTU_simple")
     args = ap.parse_args()
 
     use_anchor = args.input_mode == "xa"
@@ -105,12 +110,19 @@ def main() -> None:
     # mixed-config: dn.npz,sn.npz); normalization stats come from the FULL
     # concatenated train pool (kept identical across all scaling-study N so
     # input representations are comparable)
-    if use_coils:  # exp011: coil-current scalars, no X-point/anchor/config
-        train_ds = DNFnoDatasetCoils(args.train_data, stats=None)
+    if use_coils:  # exp011/exp012: coil-current scalars, no X-point/anchor/config
+        # exp012: --no-config-channel drops the config code -> 21ch input
+        # (R, Z + 5 params + 14 MASTU_simple coil currents); exp011 (data_v5,
+        # no config in npz) is unaffected
+        use_coils_config = not args.no_config_channel
+        train_ds = DNFnoDatasetCoils(args.train_data, stats=None,
+                                     use_config=use_coils_config)
         stats = train_ds.stats
         train_idx = nested_train_indices(train_ds.n_full, args.n_train, args.perm_seed)
-        train_ds = DNFnoDatasetCoils(args.train_data, stats=stats, indices=train_idx)
-        val_ds = DNFnoDatasetCoils(args.val_data, stats=stats)
+        train_ds = DNFnoDatasetCoils(args.train_data, stats=stats,
+                                     indices=train_idx, use_config=use_coils_config)
+        val_ds = DNFnoDatasetCoils(args.val_data, stats=stats,
+                                   use_config=use_coils_config)
     else:
         train_ds = DNFnoDataset(args.train_data, stats=None, use_anchor=use_anchor,
                                 use_config=use_config)
@@ -206,6 +218,7 @@ def main() -> None:
         "seed": args.seed,
         "input_mode": args.input_mode,
         "config_input": args.config_input,
+        "no_config_channel": args.no_config_channel,
         "stats": {k: (v.tolist() if hasattr(v, "tolist") else float(v))
                   for k, v in stats.items() if k not in ("input_mode", "config_input")},
     }, out_dir / "best.pt")

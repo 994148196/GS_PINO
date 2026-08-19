@@ -32,32 +32,45 @@ from gs_pino_dn_fno_2608.data_dn_fno import (
     rel_l2_normalized,
 )
 
-# data_v5 MAST 18 channels in true construction order: [R, Z] grid channels +
-# params(5) + coil_currents(11). Data order (verified against data_v5 npz):
-# params = [Ip, paxis, fvac, alpha_m, alpha_n]; coil order follows the freegs
-# MAST() machine definition (P2U..P6L + P1 solenoid, machine.py). The old 9/11
-# channel lists (TestTokamak P1L/P1U/P2L/P2U) remain valid for data/ & data_v2
-# subsets; this constant is documentation-only (no code consumers).
+# Channel names in construction order: [R, Z] grid channels + params(5) +
+# coil_currents + config code (when present). Data order (verified against
+# npz): params = [Ip, paxis, fvac, alpha_m, alpha_n]; coil order follows the
+# freegs machine definition; config = CONFIG_CODES value 0-4 (data_v6:
+# dn/sn/snow_single/snow_double/limiter). Old lists remain valid for their
+# subsets — this constant is documentation-only (no code consumers).
 CHANNEL_NAMES_COILS = [
     "R", "Z",
     "Ip", "paxis", "fvac", "alpha_m", "alpha_n",
+    # data_v5 MAST 11 coils
     "I_P2U", "I_P2L", "I_P3U", "I_P3L",
     "I_P4U", "I_P4L", "I_P5U", "I_P5L",
     "I_P6U", "I_P6L", "I_P1_sol",
+    # data_v6 MASTU_simple 14 coils (machine.py definition order)
+    "I_Solenoid", "I_Pc", "I_Px", "I_D1", "I_D2", "I_D3", "I_Dp",
+    "I_D5", "I_D6", "I_D7", "I_P4", "I_P5", "I_P61", "I_P62",
+    # data_v6 config code (CONFIG_CODES: dn=0 sn=1 snow_single=2
+    # snow_double=3 limiter=4) — appended last
+    "config",
 ]
 
 
 def compute_stats_coils(npz: dict, n: int | None = None) -> dict[str, np.ndarray]:
-    """Train-set mean/std of the run params (3 or 5), 4 coil currents and target psi.
+    """Train-set mean/std of the run params (3 or 5), coil currents, the
+    config code (data_v6, when present) and target psi.
 
-    Mirrors data_dn_fno.compute_stats with coil_currents replacing x_coords.
+    Mirrors data_dn_fno.compute_stats with coil_currents replacing x_coords;
+    the config channel is z-scored like the rest (std=0 -> constant channel
+    -> 0 after normalization, single-config datasets unaffected).
     """
     params = npz["params"][:n]
     coils = npz["coil_currents"][:n]
     psi = npz["psi_total"][:n]
 
-    scalar_mean = np.concatenate([params.mean(axis=0), coils.mean(axis=0)]).astype(np.float32)
-    scalar_std = np.concatenate([params.std(axis=0), coils.std(axis=0)]).astype(np.float32)
+    scalar_parts = [params, coils]
+    if "config" in npz:
+        scalar_parts.append(npz["config"][:n])
+    scalar_mean = np.concatenate([p.mean(axis=0) for p in scalar_parts]).astype(np.float32)
+    scalar_std = np.concatenate([p.std(axis=0) for p in scalar_parts]).astype(np.float32)
     psi_mean = float(psi.mean())
     psi_std = float(psi.std())
     return {
@@ -85,7 +98,7 @@ class DNFnoDatasetCoils(Dataset):
     """
 
     def __init__(self, npz_path: str | Path | list, stats: dict | None = None,
-                 indices: np.ndarray | None = None):
+                 indices: np.ndarray | None = None, use_config: bool = True):
         self.npz_path = str(npz_path)
         paths = [p.strip() for p in npz_path.split(",") if p.strip()] \
             if isinstance(npz_path, str) else [str(p) for p in npz_path]
@@ -106,7 +119,17 @@ class DNFnoDatasetCoils(Dataset):
         self.R, self.Z = _normalize_rz(_load_many("R"), _load_many("Z"))
         self.psi_total = _load_many("psi_total").astype(np.float32)      # (N, 65, 65)
         self.params = _load_many("params").astype(np.float32)            # (N, 3 or 5): Ip, paxis, fvac[, alpha_m, alpha_n]
-        self.coil_currents = _load_many("coil_currents").astype(np.float32)  # (N, 4 or 11)
+        self.coil_currents = _load_many("coil_currents").astype(np.float32)  # (N, 4 or 11 or 14)
+        # data_v6 config code channel (N, 1) — absent in pre-v6 data.
+        # use_config=False (exp012: separability probe showed the 14 coil
+        # currents identify the configuration, >=2 channels >2.0 std and all
+        # pairs >=90.75% -> no config channel needed -> 21ch input).
+        self.config = None
+        if use_config:
+            try:
+                self.config = _load_many("config").astype(np.float32)
+            except KeyError:
+                pass
         self.mask = _load_many("mask").astype(np.float32)
         self.dpdpsi = _load_many("dpdpsi").astype(np.float32)
         self.FdFdpsi = _load_many("FdFdpsi").astype(np.float32)
@@ -142,13 +165,29 @@ class DNFnoDatasetCoils(Dataset):
                 self.xpts_actual = _load_many_pad("xpts_actual").astype(np.float32)
                 self.o_point = _load_many("o_point").astype(np.float32)
             if "anchor" in d.files:
-                self.anchor = _load_many("anchor").astype(np.float32)
+                # limiter files lack anchor (no isoflux constraint,
+                # generate_dn_dataset._solve_one_limiter) — mixed pools
+                # NaN-pad those rows (limiter geometry is NaN by design;
+                # evaluate's match_xpoints_and_axis returns early on the
+                # all-NaN xpts_actual rows before anchor is consumed)
+                parts = []
+                for p in paths:
+                    with np.load(p) as d2:
+                        if "anchor" in d2.files:
+                            parts.append(d2["anchor"])
+                        else:
+                            parts.append(np.full(
+                                (len(d2["params"]), parts[0].shape[1]),
+                                np.nan, dtype=np.float32))
+                self.anchor = np.concatenate(parts, axis=0).astype(np.float32)
         self.n_full = len(self.psi_total)
 
         if stats is None:  # compute stats from the full dataset (train use)
-            stats = compute_stats_coils({
-                "params": self.params, "coil_currents": self.coil_currents,
-                "psi_total": self.psi_total})
+            d = {"params": self.params, "coil_currents": self.coil_currents,
+                 "psi_total": self.psi_total}
+            if self.config is not None:
+                d["config"] = self.config  # keep scalar count consistent
+            stats = compute_stats_coils(d)
         self.stats = stats
 
         if indices is None:
@@ -165,10 +204,13 @@ class DNFnoDatasetCoils(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         i = self.indices[idx]
-        scalars = np.concatenate([self.params[i], self.coil_currents[i]])  # (7,): data | (9,): data_v2
+        parts = [self.params[i], self.coil_currents[i]]
+        if self.config is not None:
+            parts.append(self.config[i])  # data_v6 config channel (last)
+        scalars = np.concatenate(parts)  # (7,) data | (9,) data_v2 | (20,) data_v6
         # constant channels -> 0 instead of NaN (same guard as data_dn_fno.py)
         scalars = (scalars - self.scalar_mean) / np.maximum(self.scalar_std, 1e-8)
-        # broadcast the scalar channels to the grid (7 exp001 / 9 exp003)
+        # broadcast the scalar channels to the grid
         scalar_fields = np.broadcast_to(scalars[:, None, None], (len(scalars),) + self.R.shape)
 
         x = np.concatenate([self.R[None], self.Z[None], scalar_fields], axis=0)  # (2+n_scalars, 65, 65)

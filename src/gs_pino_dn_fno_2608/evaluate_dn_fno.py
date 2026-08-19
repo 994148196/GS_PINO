@@ -247,6 +247,10 @@ def match_xpoints_and_axis(psi_pred: np.ndarray, R: np.ndarray, Z: np.ndarray,
 
     arr = np.array([[p[0], p[1], p[2]] for p in xpt_p])              # (n, 3)
     xpts_t = np.asarray(xpts_true)[:, :2]
+    if xpts_t.size == 0 or not np.isfinite(xpts_t).any():
+        # limiter bucket: no separatrix X-points (xpts_actual all-NaN / empty)
+        # -> no X-point geometry to report; caller handles the NaN metrics
+        return out
     pairs = []                       # ("global", idx) | ("local", (r,z,psi)) | None
     avail = np.ones(len(arr), dtype=bool)  # each global candidate used once
     for t in xpts_t:
@@ -338,6 +342,20 @@ def geometry_metrics(psi_pred: np.ndarray, psi_true: np.ndarray,
         return out
 
     have_truth = xpts_true is not None and len(xpts_true) > 0
+    if xpts_true is not None and len(xpts_true) == 0:
+        # limiter bucket: xpts_actual is (N, 0, 3) — a limited plasma has no
+        # separatrix X-point. An EMPTY array must not fall into the legacy
+        # find_critical pairing (it would report meaningless vacuum-saddle
+        # distances, e.g. 80-180 cm); None (legacy data/ & data_v2 have no
+        # xpts field) still does. All geometry stays NaN (honest).
+        out["dpsi_bndry_Wb"] = float("nan")
+        out["o_point_cm"] = float("nan")
+        out["x_lo_cm"] = float("nan")
+        out["x_up_cm"] = float("nan")
+        out["sep_mean_cm"] = float("nan")
+        out["sep_hausdorff_cm"] = float("nan")
+        out["sep_area_rel_err_pct"] = float("nan")
+        return out
     if not have_truth:
         # ---------- legacy path: paper data/ & data_v2 ----------
         # boundary flux = mean of the two X-point fluxes (paper)
@@ -435,10 +453,14 @@ def main() -> None:
     use_anchor = ckpt.get("input_mode", "xpoints") == "xa"
     use_config = bool(ckpt.get("config_input", False))
     if ckpt.get("input_mode", "xpoints") == "coils":
-        # exp011: coil-current dataset (18ch on MAST); ground-truth geometry
-        # (xpts_actual / o_point) is loaded by DNFnoDatasetCoils, so the v2
-        # geometry metrics below work unchanged
-        ds = DNFnoDatasetCoils(args.test_data, stats=stats)
+        # exp011/exp012: coil-current dataset (18ch on MAST / 21ch on
+        # MASTU_simple); ground-truth geometry (xpts_actual / o_point) is
+        # loaded by DNFnoDatasetCoils, so the v2 geometry metrics below work
+        # unchanged. use_config must match training (exp012 trained with
+        # --no-config-channel -> ckpt flag -> 21ch; exp011 ckpt lacks the key
+        # -> default True, but data_v5 has no config field -> 18ch)
+        use_config = not ckpt.get("no_config_channel", False)
+        ds = DNFnoDatasetCoils(args.test_data, stats=stats, use_config=use_config)
     else:
         ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=use_anchor,
                           use_config=use_config)

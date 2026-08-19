@@ -17,7 +17,14 @@
 （exp010，甚至略优于带标签版），config 通道冗余、部署无需位形标签；**最终
 端到端路线成立**（exp011）：只给可测量量（R,Z + 5 参数 + 11 线圈电流），
 模型直接生成物理正确的 psi 场，位形识别成为隐含能力（信息完全由线圈电流
-承载），SN 桶甚至反超 xa 输入——真实装置上无需位形判定/磁面重构中间环节。
+承载），SN 桶甚至反超 xa 输入——真实装置上无需位形判定/磁面重构中间环节；
+**exp012 把端到端推到五配置**（data_v6，MASTU_simple 真实壁 + DN/SN/snow_single/
+snow_double/limiter，129²，21ch = R,Z + 5 参数 + 14 线圈电流，separability 证实
+电流已识别位形无需 config 通道）：snowflake/limiter 桶 1.3-1.8% 健康（雪点二阶
+约束位形最优），DN/SN 桶 3.6%/9.0% 明显偏高（129² 与 65² 不可直接比；**SN 还有真值形态
+质量问题：磁轴系统性偏下、上瓣薄，极端样本中平面在分离面外**，2026-08-19
+用户发现并记录于 exp012 README），limiter 桶几何指标按设计为 NaN（无分离面
+X 点）。
 
 ---
 
@@ -43,6 +50,10 @@
             ▼ 端到端：coil 电流输入（无 X点/锚点/config）
     exp011（coil 18ch 混合：DN 0.841% / SN 0.948%）──► 只给可测量量直接出 psi，
             位形识别是隐含能力（信息完全由 11 线圈电流承载，无需任何显式信号）
+            ▼ 五配置扩展：MASTU_simple 真实壁（data_v6，exp012）
+    exp012（coil 21ch 混合 5 位形：DN 3.62% / SN 8.99% / snow 1.31-1.49% /
+            limiter 1.78% / 整体 3.44%）──► snowflake+limiter 位形端到端可行，
+            雪点二阶约束位形最优；跨机器不可直接比（129² vs 65²）
 ```
 
 | 阶段 | 内容 | 关键结论 |
@@ -53,6 +64,7 @@
 | 几何扩展 | X点 ±0.20 + 锚点采样（data_v3） | 三模型全退（12–31%）→ **缺陷定位** |
 | 数据质量 | data_v4 可行区采样 + 接受约束 + 诊断字段 | 三模型恢复 9–49×，约束可达验证 |
 | 位形泛化 | data_v5（MAST DN+SN）+ 混合训练（exp008/009/010） | **混合训练以 +26~35% 代价换来跨位形泛化；专职跨配置外推崩溃；模型可自推断位形（config 冗余）** |
+| 五配置端到端 | data_v6（MASTU_simple 5 位形 129²）+ exp012（coil 21ch 混合） | **snowflake/limiter 位形端到端可行（1.3–1.8%）；separability 证实 14 线圈电流识别位形、无需 config 通道；DN/SN 桶 3.6%/9.0%（跨机器仅参考）；limiter 几何 NaN（无分离面）** |
 
 ## 2. 数据集演进
 
@@ -63,6 +75,7 @@
 | data_v3 | 3000（2000/500/500） | X点 ±0.20 m；锚点 R~U[1.2,1.8]×Z~U[-0.3,0.3] 采样 | **isoflux 约束不可达**（4 线圈对 6 约束过定，残差 mean 0.50/max 2.10）；越界采样。**已删除**（生成脚本 run_generate_v3.sh 保留） |
 | data_v4 | 3000（2000/500/500） | 可行区采样（X点中心 (1.2,±0.6)、锚点中平面 Z=0 R∈[1.35,1.65]）+ **7 项物理合理性接受检查**（三角形内/四边形余量/墙内/isoflux 残差 ≤0.35/X点偏差 ≤0.10/锚点距离/core 深度）+ **8 个约束诊断字段** | 残差降至 mean 0.172 / max 0.350，2972/3000 接受；诊断字段随样本落盘（超定系统的不可达信息无法从 4 线圈电流恢复） |
 | data_v5 | 6000（各 3000 = 2000/500/500，**dn/、sn/ 分开落盘**） | **MAST 真实装置**（11 线圈、无墙）+ **混合位形**：DN（双 X 点 (0.7,±1.1)）与 SN（单 X 点，判据改为**分离面 X 点** psi≥psi_bndry 计数==1，磁轴按位置过滤）分开生成；参数范围 MAST 校准（paxis 1–5 kPa / Ip 0.3–0.8 MA / fvac 0.3–0.8）；新增 `config` 字段（0=DN, 1=SN） | **6000/6000 全接受**（500/500 各 split，SN 求解慢 7×：n_iter 40 vs 9）；SN 的 x_coords up=(0,0) 占位（恒值通道 + config 区分） |
+| data_v6 | 4000（各配置 800 = 500/100/200，5 配置分开落盘） | **MASTU_simple 真实装置**（14 线圈、**真实真空室壁**）+ **5 位形**：dn（X 点中心 R=0.80 物理修正）/ sn / snow_single / snow_double（雪点二阶约束 + 初始电流种子选分支）/ limiter（两步法触壁）；**129²** 网格；参数范围例 18/19 强等离子体（paxis 40–80 kPa / Ip 0.7–1.5 MA / fvac 0.4–0.9）；新增**标注字段**（wall_contact/excess、inwall_sep_frac）+ limiter 专有字段（is_limited/Rlim/Zlim/psi_limit，无 anchor/xpts 0 行） | 接受率 55–100%（snow/limiter 全达标，dn/sn 物理失败为主）；**浅触壁保留 + 标注**（深触壁 >20% core 排除）；壁内结构判据 2% 阈值排除 Solenoid 柱区病态；separability：14 通道电流识别位形 → exp012 21ch 无 config 通道；同 seed 重跑可扩展（chunk resume + merge） |
 
 详见 [data/README.md](data/README.md)、[data_v2/README.md](data_v2/README.md)、
 [data_v4/README.md](data_v4/README.md)（data_v4 README §2 有阈值用 data_v2 校准的记录）、
@@ -83,6 +96,7 @@
 | exp009 | data_v5 | 专职 DN / 专职 SN：X点+锚点 13ch | DN 0.492% / SN 0.953% | — | 专职自身最优；**跨配置外推崩溃**（DN→SN 253%、SN→DN 4.0e8%）→ 单一位形训练无跨位形泛化 |
 | exp010 | data_v5 | 混合 DN+SN **无 config**：X点+锚点 13ch | DN桶 0.611% / SN桶 1.148% | — | **模型能自推断位形**：仅靠 up=(0,0) 占位结构区分，两桶健康且略优于 exp008（+config）——config 通道冗余可删，输入物理自包含 |
 | exp011 | data_v5 | 混合 DN+SN **coil 电流**：R,Z+5 params+11 线圈电流 18ch（无 X点/锚点/config） | DN桶 0.841% / SN桶 **0.948%** / 整体 0.894% | — | **端到端 psi 生成**：只给可测量量（电流+工程参数）直接出物理正确的场，无需任何显式位形/拓扑信息；位形识别是隐含能力（信息完全由 11 线圈电流承载）；SN 桶反超 xa（0.948 < 1.148），整体略优于 exp008 |
+| exp012 | data_v6 | 混合 5 位形 **coil 电流**：R,Z+5 params+14 线圈电流 21ch（`--no-config-channel`，separability 证实电流识别位形） | 整体 3.435% / dn 3.618% / sn 8.988% / snow_single 1.487% / snow_double 1.307% / limiter 1.776% | —（跨机器跨网格，仅参考） | **端到端扩展到五配置**：snowflake（雪点二阶约束）与 limiter 位形 1.3–1.8% 健康；dn/sn 桶偏高（SN 收敛困难、129² 噪声大）；limiter 几何指标按设计 NaN（无分离面 X 点） |
 
 v3→v4 恢复倍数（同模型同 N）：A 9.2× ｜ A' **49×** ｜ B 25×。
 exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST）与位形

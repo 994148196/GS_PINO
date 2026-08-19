@@ -55,7 +55,12 @@ def get_machine_geometry(machine_name: str | None):
     if machine_name is None:
         return None, None, []
     from freegs import machine as fg_machine
-    m = fg_machine.MAST() if machine_name == "mast" else fg_machine.TestTokamak()
+    if machine_name == "mast":
+        m = fg_machine.MAST()
+    elif machine_name == "mastu_simple":
+        m = fg_machine.MASTU_simple()   # data_v6: real vessel wall (R 0.244-2.0)
+    else:
+        m = fg_machine.TestTokamak()
     wall_r, wall_z = None, None
     if m.wall is not None:
         wall_r, wall_z = np.asarray(m.wall.R), np.asarray(m.wall.Z)
@@ -64,8 +69,11 @@ def get_machine_geometry(machine_name: str | None):
         name, coil = entry[0], entry[1]
         if hasattr(coil, "R"):        # PF coil
             coils.append((float(coil.R), float(coil.Z), float(coil.current)))
-        else:                         # solenoid: axial stack at Rs
+        elif hasattr(coil, "Rs"):     # solenoid: axial stack at Rs
             coils.append((float(coil.Rs), 0.0, float(coil.current)))
+        elif hasattr(coil, "coils"):  # Circuit (MASTU_simple): paired coils,
+            c0 = coil.coils[0][1]     # same R, opposite Z — plot the upper one
+            coils.append((float(c0.R), float(c0.Z), float(coil.current)))
     return wall_r, wall_z, coils
 
 
@@ -117,7 +125,7 @@ def main() -> None:
     ap.add_argument("--out-dir", default="dn_fno_2608/outputs/report/figures")
     ap.add_argument("--max-samples", type=int, default=0)
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--machine", default=None, choices=["test", "mast"],
+    ap.add_argument("--machine", default=None, choices=["test", "mast", "mastu_simple"],
                     help="device geometry (wall/coils) for fig1; data_v4/v5 use "
                          "'test'/'mast' respectively (npz has no machine field)")
     ap.add_argument("--title", default="arXiv:2608.05555 reproduction — N=5000 FNO",
@@ -140,7 +148,10 @@ def main() -> None:
     # coil-variant dataset; anchor checkpoints append the anchor channels)
     input_mode = ckpt.get("input_mode", "xpoints")
     if input_mode == "coils":
-        ds = DNFnoDatasetCoils(args.test_data, stats=stats)
+        # exp012 trained with --no-config-channel (21ch): dataset must match
+        # the ckpt stats or scalar normalization misaligns (22ch vs 19 stats)
+        use_config = not ckpt.get("no_config_channel", False)
+        ds = DNFnoDatasetCoils(args.test_data, stats=stats, use_config=use_config)
     else:
         ds = DNFnoDataset(args.test_data, stats=stats, use_anchor=(input_mode == "xa"),
                           use_config=bool(ckpt.get("config_input", False)))

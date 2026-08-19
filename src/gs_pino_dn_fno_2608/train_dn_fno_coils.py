@@ -65,9 +65,11 @@ def main() -> None:
 
     # ---- data (stats from the FULL train pool, coil currents z-scored) ----
     with np.load(args.train_data) as d:
-        stats = compute_stats_coils({
-            "params": d["params"], "coil_currents": d["coil_currents"],
-            "psi_total": d["psi_total"]})
+        stats_in = {"params": d["params"], "coil_currents": d["coil_currents"],
+                    "psi_total": d["psi_total"]}
+        if "config" in d.files:  # data_v6: config code channel
+            stats_in["config"] = d["config"]
+        stats = compute_stats_coils(stats_in)
     train_idx = nested_train_indices(
         len(np.load(args.train_data)["psi_total"]), args.n_train, args.perm_seed)
 
@@ -91,8 +93,8 @@ def main() -> None:
     n_scalars = len(stats["scalar_mean"])
     print(f"\n{'='*70}")
     print(f"  DN-FNO coil-input experiment | n_train={args.n_train} | seed={args.seed}")
-    print(f"  input scalars: params({n_scalars-4}) + coil currents(4)  "
-          f"[baseline: params({n_scalars-4}) + X-points(4)]")
+    print(f"  input channels: R,Z + {n_scalars} scalars "
+          f"(v6: 5 params + 14 coils + config) [baseline: 3 params + 4 X-pts]")
     print(f"  model params: {n_params} (paper: 4,770,241)")
     print(f"  lr={args.lr}, wd={args.weight_decay}, batch={args.batch_size}, "
           f"lr patience={args.lr_patience} (x{args.lr_factor}, min {args.min_lr}), "
