@@ -18,6 +18,7 @@ GS方程背景 → 传统自由边界求解器(freegs) → PINN → **自由边�
    - 做法1（exp101 单阶段）：预测场 Δ\* 拉到数据 RHS → 精度不降反升（0.72% vs 0.84%）
    - 做法2（exp102 两阶段自洽）：先监督 psi+J，再自洽残差 + Ip 约束 → 纯数据拿不到的自洽性与 Ip 满足度
 4. 关键物理设计：**coil 分离**（网络只预测 psi_plasma，psi_total 由 Green 函数解析加回）
+5. **跨位形混合（新增 exp103/104）**：DN+SN 混合训练（无 config 标签），单一模型双位形同时求解——混合代价为零（0.70% vs DN-only 0.72%），SN 桶增益最大；两阶段自洽 + Ip 在 SN 同样成立（0.76%，Ip 0.21%/SN 0.26%）
 
 ---
 
@@ -85,12 +86,13 @@ GS方程背景 → 传统自由边界求解器(freegs) → PINN → **自由边�
 | Fig 2 | 方法演进图: 传统 freegs → PINN → PINO | ✅ paper/figures/fig2_evolution.png |
 | Fig 3 | FNO2d2608 架构 + 18ch 输入 + coil 分离示意（psi_plasma → +ΣI_kG_k → psi_total）| ✅ paper/figures/fig3_architecture.png |
 | Fig 4 | 两种方案训练曲线（train loss + val rel L2，两阶段方案标阶段切换线，无 loss 设计示意图）| ✅ paper/figures/fig4_loss_design.png |
-| Fig 5 | 两种方案各自的最优样本预测实例（KAN 论文图3风格 2×3：ψ 真值/预测对比 + 全域相对误差 + 全域 PDE 残差；单阶段 J 取数据、两阶段 J 取网络自洽）| ✅ paper/figures/fig5_predictions.png |
-| Fig 6 | 三方法对比柱状图（rel L2 + Ip 误差）+ 验证曲线（标注为 纯数据基线/单阶段方案/两阶段自洽方案）| ✅ paper/figures/fig6_comparison.png |
+| Fig 5 | 三方法对比柱状图（rel L2 + Ip 误差）+ 验证曲线（标注为 纯数据基线/单阶段方案/两阶段自洽方案）| ✅ paper/figures/fig5_comparison.png |
+| Fig 6 | 两种方案各自的最优样本预测实例（KAN 论文图3风格 2×3：ψ 真值/预测对比 + 全域相对误差 + 全域 PDE 残差；单阶段 J 取数据、两阶段 J 取网络自洽）| ✅ paper/figures/fig6_predictions.png |
+| Fig 7 | 跨位形混合（§4.3）：混合两阶段模型在 DN/SN 最优样本上的预测（ψ 对比 + 全域相对误差 + PDE 残差，图5同风格）| ✅ paper/figures/fig7_mixed_dn_sn.png |
 
-> 图由 `paper/figures/make_figures.py`（Fig 1-4、6）与 `paper/figures/make_fig5_prediction.py`
-> （Fig 5）生成（英文标签，待精修中文标签）；数据全部来自
-> data_v5/dn/test.npz 与各实验 metrics.json/history.json。
+> 图由 `paper/figures/make_figures.py`（Fig 1-5）、`make_fig5_prediction.py`（Fig 6）、
+> `make_fig7_mixed.py`（Fig 7）生成（英文标签，待精修中文标签）；数据全部来自
+> data_v5/dn、data_v5/sn test.npz 与各实验 metrics.json/history.json。
 
 ### 表
 
