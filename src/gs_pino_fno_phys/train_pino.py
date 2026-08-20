@@ -184,14 +184,16 @@ def main() -> None:
     switch_epoch, stale, t_start = None, 0, time.perf_counter()
 
     for epoch in range(1, args.epochs + 1):
-        stage = 1 if (args.mode == "twostage" and switch_epoch is None) else 2
-        # stage-2 warm-up: physics weights ramp 0 -> target (self-consistency
-        # between psi and J is not learned yet at the stage boundary; a full
-        # PDE weight at that point destroys the stage-1 psi fit)
-        if stage == 2:
-            ramp = min(1.0, (epoch - switch_epoch) / max(args.stage2_ramp_epochs, 1))
+        if args.mode == "twostage":
+            stage = 1 if switch_epoch is None else 2
+            # stage-2 warm-up: physics weights ramp 0 -> target (self-consistency
+            # between psi and J is not learned yet at the stage boundary; a full
+            # PDE weight at that point destroys the stage-1 psi fit)
+            ramp = (0.0 if switch_epoch is None
+                    else min(1.0, (epoch - switch_epoch)
+                             / max(args.stage2_ramp_epochs, 1)))
         else:
-            ramp = 0.0
+            stage, ramp = 2, 1.0   # rhs 单阶段：无切换，物理权重全量
         model.train()
         ep_loss, n_batches = 0.0, 0
         ep_comps = {"l_psi": 0.0, "l_j": 0.0, "l_pde": 0.0, "l_ip": 0.0}

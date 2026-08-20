@@ -1,5 +1,6 @@
-# dn_fno_2608 改进实验总览（exp001–exp010）
+# dn_fno_2608 改进实验总览（exp001–exp104）
 
+> 2026-08-20 更新（exp103/104：物理残差推广到混合 DN+SN）。
 > 2026-08-17 更新（data_v5 + exp008–011；几何指标 v2 修复，figures
 > 重生成）。
 > 本文档是**改进实验的总地图**：数据集怎么演进、每个实验改了什么、结果如何、
@@ -29,7 +30,14 @@ X 点）；**最后把 GS 方程物理残差加进训练**（exp101/102，PINO �
 FD 下限的 3.3×，精度不降反升）；做法2 两阶段学习 psi↔J 自洽（阶段1 监督
 psi_plasma+J，e29 达标切阶段2 加自洽残差 + Ip 约束，物理权重 30-epoch 预热修复
 首版阶段2 爆炸）：test 0.80%、Ip 误差 0.21%、mask 内 J 1.36%——**纯数据管线拿
-不到的自洽性与 Ip 约束，物理损失提供**。
+不到的自洽性与 Ip 约束，物理损失提供**；**exp103/104 把两条做法推广到混合
+DN+SN（coil 18ch 无 config，与 exp011 同口径）**：做法1 混合 test 0.70%（DN
+0.69% / SN 0.72%）——**混合代价为零**（vs exp101 DN-only 0.72% 略优、vs exp011
+混合纯 MSE 0.894% 好 21%），PDE 项约束位形不变的物理关系、把"跨位形共享容量"
+代价（exp010/011 的 +26~35%）直接吃掉，SN 桶（仅 245 训练样本）增益最大；
+做法2 混合 test 0.76%（Ip 误差 0.21%、mask 内 J 1.55%），阶段1 e45 达标切阶段2、
+30-epoch 预热无爆炸——两阶段自洽链路在混合数据上成立，且混合略优于 exp102
+DN-only（0.76 vs 0.80）。
 
 ---
 
@@ -104,6 +112,8 @@ psi_plasma+J，e29 达标切阶段2 加自洽残差 + Ip 约束，物理权重 3
 | exp012 | data_v6 | 混合 5 位形 **coil 电流**：R,Z+5 params+14 线圈电流 21ch（`--no-config-channel`，separability 证实电流识别位形） | 整体 3.435% / dn 3.618% / sn 8.988% / snow_single 1.487% / snow_double 1.307% / limiter 1.776% | —（跨机器跨网格，仅参考） | **端到端扩展到五配置**：snowflake（雪点二阶约束）与 limiter 位形 1.3–1.8% 健康；dn/sn 桶偏高（SN 收敛困难、129² 噪声大）；limiter 几何指标按设计 NaN（无分离面 X 点） |
 | exp101 | data_v5/dn | **FNO + GS 物理残差（做法1 单阶段）**：R,Z+5 params+11 线圈电流 18ch，`L = MSE(psi_plasma) + w_pde·‖Δ\*ψ_pred + μ0RJ_data‖²`；coil 分离（网络只预测 psi_plasma，psi_total 由 greens 解析加回） | rel_l2_total **0.72%**（plasma 0.81%）｜ GS 残差 core pred **1.33%** vs truth 0.40% | exp011 DN 桶 0.84（同口径 psi_total） | **纯 MSE 加 PDE 项精度不降反升**（0.72 < 0.84），预测场 GS 残差降到真值有限差分下限的 3.3×；残差 RHS 是冻结数据（J 不随预测自洽），仅输出侧平滑正则 |
 | exp102 | data_v5/dn | **FNO + GS 物理残差（做法2 两阶段）**：同 18ch；阶段1 监督 psi_plasma+J 两通道，阶段2 加**自洽**残差（Δ\*ψ_pred + μ0RJ_pred）+ Ip 约束；阶段1 val rel L2<3% 自动切换（e29），物理权重 30-epoch 线性 ramp（修复首版阶段2爆炸） | rel_l2_total **0.80%**（plasma 0.90%）｜ GS 残差 core 1.51% vs 0.40% ｜ **Ip 误差 0.21%** ｜ **J mask 内 1.36%** | exp101（做法1） | **psi↔J 自洽成立**：J ≈ −Δ\*ψ/μ0R（J 1.36% + GS 1.51% 同时成立），Ip 积分约束有效；vs exp101 多 0.08 精度代价换 J 通道 + 自洽 + Ip（做法1 给不了）；全网格 J 36.9% 是 mask 外谱振铃假指标 |
+| exp103 | data_v5 dn+sn 混合 | **做法1 推广到混合**（exp011 同口径：逗号拼接、4000 池抽 500 = 255 DN + 245 SN、stats 全池 pde_scale 0.439、无 config 通道）：`L = MSE(psi_plasma) + w_pde·‖Δ\*ψ_pred + μ0RJ_data‖²` | rel_l2_total **0.70%**（DN 0.69% / SN 0.72%）｜ GS 残差 core 0.0156 vs truth 0.0044（3.5× FD 下限） | exp101（DN-only 0.72%）；exp011（混合纯 MSE 0.894%） | **混合代价为零**：PDE 项约束位形不变的 Δ\*ψ 物理关系，把 exp010/011 的跨位形共享容量代价（+26~35%）直接吃掉，整体甚至略优于 exp101 DN-only；SN 桶（245 训练样本）增益最大——物理正则等效于数据增广（SN 0.72% < exp011 的 DN 桶 0.84%）；位形自推断在物理残差管线下再验证（11 线圈电流承载位形信息） |
+| exp104 | data_v5 dn+sn 混合 | **做法2 推广到混合**：同 exp103 数据口径；阶段1 监督 psi_plasma+J，e45（val 2.81%<3%）切阶段2 加自洽残差 + Ip 约束，物理权重 30-epoch ramp | rel_l2_total **0.76%**（DN 0.73% / SN 0.79%）｜ GS 残差 core 0.0167 vs 0.0044 ｜ **Ip 0.21%**（SN 0.26%）｜ **J mask 内 1.55%**（SN 1.73%） | exp103（做法1 0.70%）；exp102（DN-only 0.80%） | **两阶段自洽链路在混合数据上成立**（ramp 无爆炸，SN 桶自洽同机制：单 X 点位形下 Ip/J 约束有效）；vs exp103 +0.06 与 exp101/102 同向（+0.08）——做法2 多 J 通道 + 自洽 + Ip；混合略优于 exp102 DN-only（0.76 vs 0.80，同 exp103 的"PDE 吃掉共享容量代价"） |
 
 v3→v4 恢复倍数（同模型同 N）：A 9.2× ｜ A' **49×** ｜ B 25×。
 exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST）与位形
@@ -184,10 +194,11 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 - **混合代价归因**：+26~35% 是共享容量代价（exp010 已排除 config 通道
   因素）；可用 N=2000 或分位形独立归一化继续消融。
 - **PINO 阶段**：PLAN.md 为物理约束训练预留了全部字段（greens/dpdpsi/
-  FdFdpsi），**已启用**（exp101/102，`src/gs_pino_fno_phys/`，data_v5/dn，
-  做法1 RHS 残差 + 做法2 两阶段自洽 + Ip 约束，均完成且文档化）。后续方向：
+  FdFdpsi），**已启用**（exp101–104，`src/gs_pino_fno_phys/`：exp101/102
+  data_v5/dn 做法1 RHS 残差 + 做法2 两阶段自洽 + Ip 约束；exp103/104 两条
+  做法推广到混合 DN+SN——混合代价为零，均完成且文档化）。后续方向：
   全量 N=2000（预估 ~1h/实验）、`--pde-mask-erode` 边界差分消融、做法1/2
-  在 data_v6 五配置上的推广（exp101/102 是单一位形 DN-only）。
+  在 data_v6 五配置上的推广（exp103/104 是 data_v5 的 DN/SN 两种位形）。
 - **延迟/部署**：复现阶段已证 GPU 前向 1.6 ms（665× vs freegs）；改进模型
   结构未变，延迟结论直接沿用。
 
@@ -204,7 +215,8 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 | [PLAN_v5_mixed_configs.md](PLAN_v5_mixed_configs.md) | data_v5 可行性探针报告 + 实施计划（含 v6 snow/limiter 路线） |
 | [experiments/README.md](experiments/README.md) | 实验目录组织约定 + 一页台账 |
 | exp001–exp012/ | 每实验 README（设计/结果/结论）+ notes（解读/偏差记录）+ metrics.json |
-| exp101/102_pino_*_n500/ | FNO + 物理残差（PINO 阶段）：做法1 rhs（exp101）/ 做法2 两阶段（exp102）各自 README（18ch 通道表 + 结果表）+ metrics.json + figures/（exp011 风格 fig1/2/3 + stats_per_sample.json）+ train/eval.log |
+| exp101/102_pino_*_n500/ | FNO + 物理残差（PINO 阶段，DN-only）：做法1 rhs（exp101）/ 做法2 两阶段（exp102）各自 README（18ch 通道表 + 结果表）+ metrics.json + figures/（exp011 风格 fig1/2/3 + stats_per_sample.json）+ train/eval.log |
+| exp103/104_pino_*_mix_n500/ | 同上两做法在**混合 DN+SN**（coil 18ch 无 config）上的推广：README（结论速览 + 混合池统计 + 三桶结果表：all/dn/sn）+ eval_all\|dn\|sn/ + figures_all\|dn\|sn/（exp011 风格 fig1/2/3 + stats_per_sample.json，twostage fig1 含 J 行/fig2 含 Ip·J 直方图）+ train/eval_*.log（日志落各自实验目录） |
 
 ## 8. 可视化产物
 
@@ -230,6 +242,8 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 | exp011 | model_b18ch_coils_mix/figures_dn/ + figures_sn/ | coil 18ch 端到端混合模型在 DN / SN test 各一套（fig1 含 MAST 装置/11 线圈） |
 | exp101 | exp101_pino_rhs_n500/figures/ | exp011 风格 fig1/2/3 + stats_per_sample.json（fig1 = best/worst psi_total 真值/预测/|diff|，装置线圈 + 等高线 + 分离面 + X 点 + 磁轴；fig3 = 几何误差） |
 | exp102 | exp102_pino_twostage_n500/figures/ | 同 exp101，fig1 追加 J 行、fig2 追加 Ip/J 直方图 |
+| exp103 | exp103_pino_rhs_mix_n500/figures_all\|dn\|sn/ | 同 exp101 风格，三桶各一套（all=1000 拼接 / dn=500 / sn=500）；SN 桶 fig3 x_up 按设计 NaN（单 X 点） |
+| exp104 | exp104_pino_twostage_mix_n500/figures_all\|dn\|sn/ | 同 exp102 风格（fig1 含 J 行、fig2 含 Ip/J），三桶各一套；预测场假临界点数（4–8，中位 5）少于 exp011（3–13，中位 6）——物理正则使预测场更干净 |
 
 示例（v4 三模型，test 494）：A' best #337 0.136% / worst #124 3.17%；
 B best #39 0.147% / worst #411 3.44%；A best #22 0.444% / worst #126 13.45%。
