@@ -461,16 +461,20 @@ def _plot_fig3(out_path: Path, rows: dict, title: str) -> None:
     n_eval = len(rl2)
 
     ax = axes[0, 0]
-    sc = ax.scatter(x_up, x_lo, c=rl2, cmap="viridis", s=18, alpha=0.8)
     all_x = np.concatenate([x_up, x_lo])
     n_xok = int(np.isfinite(all_x).sum())
-    lim = 1.3 * max(1.0, float(np.nanpercentile(all_x, 95)))
-    ax.plot([0, lim], [0, lim], "k--", lw=0.8)
-    ax.set_xlim(0, lim)
-    ax.set_ylim(0, lim)
+    if n_xok == 0:
+        ax.text(0.5, 0.5, "no X-point geometry (no separatrix)",
+                ha="center", va="center", transform=ax.transAxes)
+    else:
+        sc = ax.scatter(x_up, x_lo, c=rl2, cmap="viridis", s=18, alpha=0.8)
+        lim = 1.3 * max(1.0, float(np.nanpercentile(all_x, 95)))
+        ax.plot([0, lim], [0, lim], "k--", lw=0.8)
+        ax.set_xlim(0, lim)
+        ax.set_ylim(0, lim)
+        fig.colorbar(sc, ax=ax, label="rel L2 (%)")
     ax.set_xlabel("upper X-point error (cm)")
     ax.set_ylabel("lower X-point error (cm)")
-    fig.colorbar(sc, ax=ax, label="rel L2 (%)")
     ax.set_title(f"X-point localization errors (n={n_xok} localizable / {n_eval})")
 
     for pos, key, label in (
@@ -478,13 +482,18 @@ def _plot_fig3(out_path: Path, rows: dict, title: str) -> None:
             ((1, 0), "o_point_cm", "O-point error"),
             ((1, 1), "sep_area_rel_err_pct", "separatrix area rel. error")):
         ax = axes[pos]
-        vals = np.array(rows[key])
-        ax.hist(vals, bins=40, color="mediumseagreen", alpha=0.8)
-        ax.axvline(np.nanmean(vals), color="green", ls="-",
-                   label=f"ours mean {np.nanmean(vals):.4f}")
+        vals = np.asarray(rows[key], float)
+        vals = vals[np.isfinite(vals)]  # limiter 桶几何指标全 NaN (无分离面) -> 跳过
+        if len(vals) < 2:
+            ax.text(0.5, 0.5, f"no finite data ({len(vals)} pts)",
+                    ha="center", va="center", transform=ax.transAxes)
+        else:
+            ax.hist(vals, bins=40, color="mediumseagreen", alpha=0.8)
+            ax.axvline(np.mean(vals), color="green", ls="-",
+                       label=f"ours mean {np.mean(vals):.4f}")
+            ax.legend(fontsize=8)
         ax.set_xlabel("cm" if "cm" in key else "%")
         ax.set_ylabel("count")
-        ax.legend(fontsize=8)
         ax.set_title(label)
     fig.suptitle(f"Geometry diagnostics ({title}, n={n_eval} test samples)", fontsize=12)
     fig.tight_layout()

@@ -1,0 +1,84 @@
+{
+  "n": 200,
+  "mode": "twostage",
+  "rel_l2_plasma_pct": {
+    "mean": 3.00426835520193,
+    "median": 2.6332849636673927,
+    "p95": 6.167283747345205
+  },
+  "rel_l2_total_pct": {
+    "mean": 1.7830676480662075,
+    "median": 1.4935602433979511,
+    "p95": 3.9224131405353524
+  },
+  "rmse_phys_Wb_plasma": {
+    "mean": 0.0017762005294207483,
+    "median": 0.0015669710119254887
+  },
+  "rmse_phys_Wb_total": {
+    "mean": 0.0017762003641109913,
+    "median": 0.001566971419379115
+  },
+  "gs_residual_pred": {
+    "core_mask": 2.5315337735414505,
+    "geom_mask": 1.9004185944795609
+  },
+  "gs_residual_truth": {
+    "core_mask": 0.006697717807255686,
+    "geom_mask": 0.0029935980407753957
+  },
+  "geometry": {
+    "x_lo_cm": {
+      "mean": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "x_up_cm": {
+      "mean": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "o_point_cm": {
+      "mean": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "sep_mean_cm": {
+      "mean": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "sep_hausdorff_cm": {
+      "mean": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "sep_area_rel_err_pct": {
+      "mean": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "n_xpt_fail": 4
+  },
+  "ckpt": {
+    "best_val_rel_l2": 0.03431637462973595,
+    "best_epoch": 300,
+    "switch_epoch": 300,
+    "artifact_stage": "2"
+  },
+  "ip_rel_err_pct": {
+    "mean": 1.1990311555564404,
+    "median": 0.8179139345884323,
+    "p95": 3.6016330122947693
+  },
+  "j_rel_l2_pct": {
+    "mean": 25.093258298933506,
+    "median": 24.79677051305771,
+    "p95": 31.11348763108254
+  },
+  "j_rel_l2_mask_pct": {
+    "mean": 4.5164564601145685,
+    "median": 3.9112860336899757,
+    "p95": 9.816598221659655
+  }
+}
