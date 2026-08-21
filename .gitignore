@@ -35,5 +35,11 @@ dn_fno_2608/data_v5/**
 dn_fno_2608/data_v6/**
 !dn_fno_2608/data_v6/README.md
 
+# data_v6_clean 清洗数据（npz 可再生成，不入库；README/manifest/scores 入库）
+dn_fno_2608/data_v6_clean/**
+!dn_fno_2608/data_v6_clean/README.md
+!dn_fno_2608/data_v6_clean/manifest.json
+!dn_fno_2608/data_v6_clean/scores.json
+
 # KAN OOD 生成数据（可再生成，688MB 不入库）
 dn_fno_2608/kan/data_ood/**/*.npz

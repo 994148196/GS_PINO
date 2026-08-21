@@ -1,0 +1,91 @@
+{
+  "n_eval": 200,
+  "n_params": 4212417,
+  "n_find_critical_fail": 4,
+  "rel_l2_pct": {
+    "mean": 1.7880033703986555,
+    "std": 0.9692041974573844,
+    "median": 1.524462876841426,
+    "p95": 3.677654992789029
+  },
+  "rel_l2_lt_0.12_pct": 0.0,
+  "rmse_phys_Wb": {
+    "mean": 0.0018593663821229712,
+    "std": 0.0010311171277512495,
+    "median": 0.0015715567278675735,
+    "p95": 0.0038442415534518637
+  },
+  "gs_residual": {
+    "pred": {
+      "mean": 0.6051283343136311,
+      "std": 0.32233225019551287,
+      "median": 0.5095716416835785,
+      "p95": 1.4819928109645837
+    },
+    "true_freegs": {
+      "mean": 0.3212908761826111,
+      "std": 0.8942798175999507,
+      "median": 0.002839550608769059,
+      "p95": 2.4876424789428664
+    },
+    "ratio_pred_true": 1.8834283173659006
+  },
+  "geometry": {
+    "dpsi_bndry_Wb": {
+      "mean": NaN,
+      "std": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "o_point_cm": {
+      "mean": NaN,
+      "std": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "x_lo_cm": {
+      "mean": NaN,
+      "std": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "x_up_cm": {
+      "mean": NaN,
+      "std": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "sep_mean_cm": {
+      "mean": NaN,
+      "std": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "sep_hausdorff_cm": {
+      "mean": NaN,
+      "std": NaN,
+      "median": NaN,
+      "p95": NaN
+    },
+    "sep_area_rel_err_pct": {
+      "mean": NaN,
+      "std": NaN,
+      "median": NaN,
+      "p95": NaN
+    }
+  },
+  "paper_reference": {
+    "rel_l2_mean_pct": 0.061,
+    "rel_l2_best_model_pct": 0.052,
+    "rmse_phys_Wb": 1.79e-05,
+    "rmse_phys_best_Wb": 1.54e-05,
+    "sep_mean_cm": 0.072,
+    "sep_hausdorff_cm": 2.128,
+    "sep_area_pct": 0.465,
+    "x_lo_cm": 0.161,
+    "x_up_cm": 0.112,
+    "o_point_cm": 0.031,
+    "dpsi_bndry_Wb": 9.82e-06,
+    "gs_residual": 2.29
+  }
+}

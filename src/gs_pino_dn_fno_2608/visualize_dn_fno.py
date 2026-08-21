@@ -396,10 +396,16 @@ def main() -> None:
             ((1, 0), "o_point_cm", "O-point error", PAPER["o_point_cm"]),
             ((1, 1), "sep_area_rel_err_pct", "separatrix area rel. error", 0.465)):
         ax = axes[pos]
-        ax.hist(rows[key], bins=40, color="mediumseagreen", alpha=0.8)
-        ax.axvline(ref, color="red", ls="--", label=f"paper {ref}")
-        ax.axvline(np.nanmean(rows[key]), color="green", ls="-",
-                   label=f"ours {np.nanmean(rows[key]):.4f}")
+        d = np.asarray(rows[key], float)
+        d = d[np.isfinite(d)]  # limiter 桶几何指标全 NaN (无分离面) -> 跳过
+        if len(d) < 2:
+            ax.text(0.5, 0.5, f"no finite data ({len(d)} pts)",
+                    ha="center", va="center", transform=ax.transAxes)
+        else:
+            ax.hist(d, bins=40, color="mediumseagreen", alpha=0.8)
+            ax.axvline(ref, color="red", ls="--", label=f"paper {ref}")
+            ax.axvline(np.mean(d), color="green", ls="-",
+                       label=f"ours {np.mean(d):.4f}")
         ax.set_xlabel("cm" if "cm" in key else "%")
         ax.set_ylabel("count")
         ax.legend(fontsize=8)

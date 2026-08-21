@@ -62,6 +62,7 @@ dn_fno_2608/
 | [exp010_mixed_no_config](exp010_mixed_no_config/README.md) | data_v5 13ch xa 无 config | DN 0.611% / SN 1.148% | **模型能自推断位形**：无 config 略优于带 config；config 冗余可删（exp012 21ch 的直接依据） |
 | [exp011_coil_input_v5](exp011_coil_input_v5/README.md) | data_v5 18ch coil 混合 | DN 0.841% / SN 0.948% / 整体 0.894% | **端到端 psi 生成**：只给可测量量直接出物理正确的场；位形识别为隐含能力 |
 | [exp012_coil_input_v6](exp012_coil_input_v6/README.md) | data_v6 21ch coil 五配置混合 | eval_all 3.435%；sn 8.988%；snow_double 1.307% | 五配置混合成立；雪点/limiter 桶最优；**sn 桶异常 = 真值数据质量问题**（data_v6 README §8.1） |
+| [exp013_clean_v6](exp013_clean_v6/README.md) | data_v6_clean 21ch coil（剔除病态+补足） | eval_all 3.045%；sn 7.738%；snow_double 1.074% | **清洗收益分解**：dn −10.7%/snow_double −9.6% 为模型真实收益（同 test 集）；sn −13.9% 主要来自 test 剔除病态（模型原 test +3.1% 未变强，剔除过量警示） |
 
 > 几何指标 v2（2026-08-17）：exp008/009/010 已按"真值基准 X 点配对 + 射线法
 > 分离面"重评估（旧版 sep_mean 数十 cm 为 find_critical 假鞍点伪差），几何数字
