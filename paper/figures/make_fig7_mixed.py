@@ -10,10 +10,11 @@ without configuration labels) shown for each configuration (2 rows):
                predicted), truth X-points / magnetic axis marked
            (b/e) relative error |psi_pred - psi_true| / |psi_true|
                (full domain, NaN only where the truth flux is near zero)
-           (c/f) PDE residual |Delta* psi_pred + mu0 R J| (full interior
-               grid; J = network prediction inside the plasma — the
-               self-consistency residual — and 0 outside, where it reduces
-               to |Delta* psi_pred|)
+           (c/f) PDE residual |Delta* psi_pred + mu0 R J| inside the plasma
+               (vacuum is NaN/white), J = network prediction — the
+               self-consistency residual. Outside the plasma J = 0 and the
+               residual would reduce to |Delta* psi_pred|, dominated by
+               network approximation noise, so it is not shown.
 Layout identical to Fig 5: manual (no tight_layout), panels keep the data
 aspect, colorbars glued via inset_axes, inter-subplot whitespace ~2 CJK
 characters wide.
@@ -107,6 +108,9 @@ def main():
         j_phys = np.where(mask, j_p, 0.0)[1:-1, 1:-1]
         resid = np.full_like(psi_tot_t, np.nan)
         resid[1:-1, 1:-1] = np.abs(lap + MU0 * r_c * j_phys)
+        # in-plasma only: outside the plasma J = 0 and the harmonicity check
+        # |Delta* psi_pred| is dominated by network approximation noise
+        resid[~mask] = np.nan
 
         mre = float(np.nanmean(rel))
         rmse = float(np.sqrt(np.mean((psi_tot_p - psi_tot_t) ** 2)))
@@ -116,6 +120,12 @@ def main():
         rows.append(dict(name=name, R=R, Z=Z, psi_tot_t=psi_tot_t,
                          psi_tot_p=psi_tot_p, rel=rel, resid=resid,
                          geoms=geoms))
+
+    # shared color scale per quantity across both rows (same physical
+    # quantity -> same colormap range; per-panel vmax would make the two
+    # rows look artificially different)
+    rel_vmax = max(np.nanpercentile(d["rel"] * 100, 97) for d in rows)
+    resid_vmax = max(np.nanpercentile(d["resid"], 97) for d in rows)
 
     # ---- figure: 2 rows (DN / SN) x 3 columns, manual layout ------------
     # ============================================================
@@ -193,9 +203,12 @@ def main():
         ax.tick_params(length=3)
 
         ax = axes[row, 1]
-        im = ax.imshow(rel * 100, extent=[R.min(), R.max(), Z.min(), Z.max()],
+        # rel/resid arrays are laid out (axis0=R, axis1=Z) while imshow maps
+        # axis0 -> y, axis1 -> x; transpose so the physics frame matches
+        # extent=[R, Z] and the truth LCFS overlay aligns
+        im = ax.imshow(rel.T * 100, extent=[R.min(), R.max(), Z.min(), Z.max()],
                        origin="lower", cmap="magma",
-                       vmin=0, vmax=np.nanpercentile(rel * 100, 97))
+                       vmin=0, vmax=rel_vmax)
         cax = ax.inset_axes([1.0 + CBG / PW, 0.0, CBW / PW, 1.0],
                             transform=ax.transAxes)
         fig.colorbar(im, cax=cax, label="rel. error (%)")
@@ -204,10 +217,9 @@ def main():
         ax.tick_params(length=3)
 
         ax = axes[row, 2]
-        vmax = np.nanpercentile(resid, 97)
-        im = ax.imshow(resid, extent=[R.min(), R.max(), Z.min(), Z.max()],
+        im = ax.imshow(resid.T, extent=[R.min(), R.max(), Z.min(), Z.max()],
                        origin="lower", cmap="hot",
-                       vmin=0, vmax=vmax)
+                       vmin=0, vmax=resid_vmax)
         cax = ax.inset_axes([1.0 + CBG / PW, 0.0, CBW / PW, 1.0],
                             transform=ax.transAxes)
         fig.colorbar(im, cax=cax, label="|Δ*ψ + μ₀RJ| (Wb/m²)")

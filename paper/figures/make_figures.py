@@ -340,7 +340,7 @@ def fig5_comparison():
     ax.set_ylabel("validation rel L2 (%)")
     ax.set_yscale("log")
     ax.legend(fontsize=10)
-    ax.set_title("(b) Validation curves (best-ckpt selection)")
+    ax.set_title("(b) Validation curves")
 
     fig.tight_layout()
     fig.savefig(FIGDIR / "fig5_comparison.png", bbox_inches="tight")
@@ -351,7 +351,7 @@ def fig5_comparison():
 if __name__ == "__main__":
     # fig1_freeboundary()
     # fig2_evolution()
-     fig3_architecture()
+    # fig3_architecture()
     # fig4_training()
-    # fig5_comparison()
+     fig5_comparison()
     # print("All figures saved to", FIGDIR)
