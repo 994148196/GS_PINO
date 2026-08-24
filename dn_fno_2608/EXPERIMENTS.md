@@ -1,5 +1,6 @@
-# dn_fno_2608 改进实验总览（exp001–exp106）
+# dn_fno_2608 改进实验总览（exp001–exp202）
 
+> 2026-08-24 更新（exp201/202：物理残差数据源替换——freegs → gspack2_TRAE）。
 > 2026-08-21 更新（exp105/106：物理残差推广到 data_v6_clean 五配置混合）。
 > 2026-08-20 更新（exp103/104：物理残差推广到混合 DN+SN）。
 > 2026-08-17 更新（data_v5 + exp008–011；几何指标 v2 修复，figures
@@ -52,7 +53,19 @@ X 点定位 3.09 vs 6.11 cm——"PDE 吃掉跨位形共享容量代价"在五�
 成立；做法2（exp106）2.625%（仍优于 exp013 −14%）但**自洽未建立**（GS
 残差 550×）：阶段1 最低 3.416% 差 0.4 点未达 3% 阈值 → e300 兜底切换，
 阶段2 仅 74 epochs 即早停（patience 从切换起计），物理项在收敛途中被
-掐断——**五配置混合下阶段1 严阈值不可达，阶段2 窗口被早停压缩**。
+掐断——**五配置混合下阶段1 严阈值不可达，阶段2 窗口被早停压缩**；
+**exp201/202 验证 gspack2_TRAE（freegs 风格重实现求解包 gspack v2.0.0）
+作为数据源**（data_gspack2_v1：MAST 11 线圈 1:1 复刻、26 键 schema 与
+data_v5 逐键一致、greens 恒等式 3e-8、可 top-up，管线零改动重跑 exp103/104
+同口径）：做法1（exp201）混合 test **1.197%**（DN 1.06 / SN 1.33）vs exp103
+0.703%，做法2（exp202）**1.316%**（DN 1.17 / SN 1.46，Ip 0.935% / J mask
+2.82%）vs exp104 0.76%——**两做法退化幅度一致（+0.50/+0.56pp），超出
+±0.2pp 数据等价判据，但分布等价成立**：输入/场统计/频谱/收敛质量全一致、
+交叉评估模型互通（exp103 与 exp104 模型在 g2 上均 ~1.12%）、exp103 模型
+在 g2 train/test 上同为 ~1.11%（数据固有下限 ~1.1%，非训练失败/子集运气）；
+J/Ip 通道退化是 psi 的 2 倍+（J 为二阶导数场对微结构敏感；Ip 下限被 g2
+数据内重构精度 0.58% 抬高）；最可能来源：gspack 约束解更紧（X 点偏差
+0.9mm vs freegs 16mm）→ 局部微结构表示代价更高。
 
 ---
 
@@ -135,6 +148,8 @@ X 点定位 3.09 vs 6.11 cm——"PDE 吃掉跨位形共享容量代价"在五�
 | exp104 | data_v5 dn+sn 混合 | **做法2 推广到混合**：同 exp103 数据口径；阶段1 监督 psi_plasma+J，e45（val 2.81%<3%）切阶段2 加自洽残差 + Ip 约束，物理权重 30-epoch ramp | rel_l2_total **0.76%**（DN 0.73% / SN 0.79%）｜ GS 残差 core 0.0167 vs 0.0044 ｜ **Ip 0.21%**（SN 0.26%）｜ **J mask 内 1.55%**（SN 1.73%） | exp103（做法1 0.70%）；exp102（DN-only 0.80%） | **两阶段自洽链路在混合数据上成立**（ramp 无爆炸，SN 桶自洽同机制：单 X 点位形下 Ip/J 约束有效）；vs exp103 +0.06 与 exp101/102 同向（+0.08）——做法2 多 J 通道 + 自洽 + Ip；混合略优于 exp102 DN-only（0.76 vs 0.80，同 exp103 的"PDE 吃掉共享容量代价"） |
 | exp105 | data_v6_clean 五配置 | **做法1 推广到五配置混合**（exp013 同口径：21ch 无 config、2500 池抽 500、129²）：`L = MSE(psi_plasma) + w_pde·‖Δ\*ψ_pred + μ0RJ_data‖²` | rel_l2_total **2.362%**（dn 2.43 / sn 5.88 / snow_single 1.39 / snow_double 0.79 / limiter 1.33）｜ GS 残差 core 0.060 vs truth 0.0029（20.8× FD 下限）｜ X 点 3.09 cm | exp013（纯 MSE 3.045%） | **物理残差在五配置混合上全面增益**：每桶 −3~−27%（整体 −22%，limiter −26% 触壁位形不破坏管线）；X 点定位全面更好（3.09 vs 6.11 cm）；GS 残差 20.8×（v5 是 3.5×——129² 差分噪声 + limiter/SN 病态使拉紧程度下降）；snowflake 桶 O 点/分离面指标受检测算法局限污染（雪点高阶零点混淆临界点分类，对应样本 rel L2 仅 0.5–1.4%） |
 | exp106 | data_v6_clean 五配置 | **做法2 推广到五配置混合**：阶段1 监督 psi_plasma+J；**阶段1 最低 3.416% 差 0.4 点未达 3% 阈值 → e300 兜底切换**；阶段2 仅 74 epochs 即早停（patience 75 从切换起计） | rel_l2_total **2.625%**（dn 2.98 / sn 5.84 / snow_single 1.48 / snow_double 1.04 / limiter 1.78）｜ GS 残差 core **1.60** vs 0.0029（550×——自洽未建立）｜ Ip 1.04% ｜ J mask 7.44% | exp105（做法1 2.362%）；exp013（纯 MSE 3.045%） | **自洽链路未建立**：阶段1 严阈值在五配置下不可达（limiter 触壁 + SN 病态拖慢 psi_plasma 拟合）→ 兜底切换 + 阶段2 窗口被早停压缩（l_pde 2.93→0.013 仍在降被掐断）；精度仍优于纯 MSE −14%（阶段1 J 监督不损害精度）；改进方向：阈值放宽/切换后重置 patience/更长阶段2 |
+| exp201 | data_gspack2_v1（gspack2_TRAE 求解，MAST 复刻）dn+sn 混合 | **做法1 数据源替换**（exp103 同口径：18ch coil 无 config、1000 池抽 500 = 256 DN + 244 SN）：`L = MSE(psi_plasma) + w_pde·‖Δ\*ψ_pred + μ0RJ_data‖²` | rel_l2_total **1.197%**（DN 1.06 / SN 1.33）｜ GS 残差 core 0.0222 vs truth 0.00082（27×，truth 比 v5 小 5 倍因 g2 约束解更紧）｜ X 点 0.56/0.67 cm | exp103（同口径 v5 0.703%） | **分布等价成立、误差等价不成立**：输入/场统计/频谱/收敛全一致 + 交叉评估互通（exp103 模型在 g2 train/test 均 ~1.11% = g2 固有下限，exp201 模型在 v5 上 1.14%），+0.50pp 超 ±0.2pp 判据是数据固有而非训练失败；物理残差机制本身成立（X 点亚厘米、n_xpt_fail=0、GS 残差倍数 27×） |
+| exp202 | 同 exp201 数据 | **做法2 数据源替换**（exp104 同口径）：阶段1 监督 psi_plasma+J，e61（val 2.9%<3%）切阶段2 加自洽残差 + Ip 约束，ramp 30 无爆炸 | rel_l2_total **1.316%**（DN 1.17 / SN 1.46）｜ GS 残差 core 0.0271 vs 0.00082（33×）｜ **Ip 0.935%**（DN 0.62 / SN 1.25）｜ **J mask 2.82%**（DN 2.13 / SN 3.52） | exp104（v5 0.76% / Ip 0.21% / J 1.55%）；exp201（同数据做法1 1.197%） | **两阶段在 g2 上机制成立但全面退化**：+0.56pp 与 exp201 同量级（两做法 g2 固有下限一致 ~1.1%，exp104 模型在 g2 上 1.13% 佐证）；J/Ip 退化是 psi 的 2 倍+（J 二阶导数场放大微结构；Ip 下限被 g2 数据内重构精度 0.58% 抬高，0.935% 非约束失效）；切换 e61 正常比 exp104 晚 16 epoch |
 
 v3→v4 恢复倍数（同模型同 N）：A 9.2× ｜ A' **49×** ｜ B 25×。
 exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST）与位形
@@ -241,6 +256,7 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 | exp101/102_pino_*_n500/ | FNO + 物理残差（PINO 阶段，DN-only）：做法1 rhs（exp101）/ 做法2 两阶段（exp102）各自 README（18ch 通道表 + 结果表）+ metrics.json + figures/（exp011 风格 fig1/2/3 + stats_per_sample.json）+ train/eval.log |
 | exp103/104_pino_*_mix_n500/ | 同上两做法在**混合 DN+SN**（coil 18ch 无 config）上的推广：README（结论速览 + 混合池统计 + 三桶结果表：all/dn/sn）+ eval_all\|dn\|sn/ + figures_all\|dn\|sn/（exp011 风格 fig1/2/3 + stats_per_sample.json，twostage fig1 含 J 行/fig2 含 Ip·J 直方图）+ train/eval_*.log（日志落各自实验目录） |
 | exp105/106_pino_*_v6clean_n500/ | 同上两做法在 **data_v6_clean 五配置混合**（21ch、129²、MASTU_simple）上的推广：README（结论速览 + 混合池统计 + 六桶结果表：all + dn/sn/snow_single/snow_double/limiter）+ eval_all\|5 配置/ + figures_all\|5 配置/（exp011 风格，fig3 含 limiter 全 NaN 防护）+ train/eval_*.log（日志落各自实验目录） |
+| exp201/202_pino_*_gspack2_n500/ | 同上两做法在 **data_gspack2_v1**（gspack2_TRAE 求解的 MAST 11 线圈复刻，18ch coil 无 config）上的**数据源替换**复现：README（结论速览 + 诊断链 [交叉评估矩阵] + 三桶结果表）+ eval_all\|dn\|sn/ + eval_x_v5all/（g2 模型交叉评估 v5 test）+ figures_all\|dn\|sn/ + train/eval_*.log |
 
 ## 8. 可视化产物
 
@@ -270,6 +286,8 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 | exp104 | exp104_pino_twostage_mix_n500/figures_all\|dn\|sn/ | 同 exp102 风格（fig1 含 J 行、fig2 含 Ip/J），三桶各一套；预测场假临界点数（4–8，中位 5）少于 exp011（3–13，中位 6）——物理正则使预测场更干净 |
 | exp105 | exp105_pino_rhs_v6clean_n500/figures_all\|dn\|sn\|snow_*\|limiter/ | exp101 风格六桶各一套（MASTU_simple 真实壁 + 14 线圈）；limiter 桶 fig3 全 NaN 防护（"no finite data"）；snowflake 桶 O 点/分离面受检测算法局限污染（见 README §6） |
 | exp106 | exp106_pino_twostage_v6clean_n500/figures_all\|dn\|sn\|snow_*\|limiter/ | 同 exp102 风格（fig1 含 J 行、fig2 含 Ip/J），六桶各一套；阶段2 自洽未建立（GS 残差 550×）在 fig2 GS 直方图可见 |
+| exp201 | exp201_pino_rhs_mix_gspack2_n500/figures_all\|dn\|sn/ | 同 exp103 风格三桶各一套（data_gspack2_v1）；另有 eval_x_v5all/（g2 模型交叉评估 v5 test，诊断用） |
+| exp202 | exp202_pino_twostage_mix_gspack2_n500/figures_all\|dn\|sn/ | 同 exp104 风格（fig1 含 J 行、fig2 含 Ip/J）三桶各一套（data_gspack2_v1）；另有 eval_x_v5all/（交叉评估） |
 
 示例（v4 三模型，test 494）：A' best #337 0.136% / worst #124 3.17%；
 B best #39 0.147% / worst #411 3.44%；A best #22 0.444% / worst #126 13.45%。

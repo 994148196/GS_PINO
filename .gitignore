@@ -35,6 +35,11 @@ dn_fno_2608/data_v5/**
 dn_fno_2608/data_v6/**
 !dn_fno_2608/data_v6/README.md
 
+# data_gspack2_v1 生成数据（gspack2_TRAE MAST 复刻，npz 可再生成，不入库；README/探针入库）
+dn_fno_2608/data_gspack2_v1/**
+!dn_fno_2608/data_gspack2_v1/README.md
+!dn_fno_2608/data_gspack2_v1/_probe_*.json
+
 # data_v6_clean 清洗数据（npz 可再生成，不入库；README/manifest/scores 入库）
 dn_fno_2608/data_v6_clean/**
 !dn_fno_2608/data_v6_clean/README.md
@@ -43,3 +48,6 @@ dn_fno_2608/data_v6_clean/**
 
 # KAN OOD 生成数据（可再生成，688MB 不入库）
 dn_fno_2608/kan/data_ood/**/*.npz
+
+# smoke 冒烟产物（可再生成，不入库）
+dn_fno_2608/experiments/_smoke*/

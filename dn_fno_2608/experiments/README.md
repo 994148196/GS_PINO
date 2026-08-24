@@ -44,6 +44,7 @@ dn_fno_2608/
 | [data_v4/](../data_v4/README.md) | TestTokamak DN（可行区+7 项接受约束） | 65² | 2972 | 11/13ch | exp006/007 |
 | [data_v5/](../data_v5/README.md) | **MAST** DN+SN | 65² | 各 3000 | 18ch（coil）/13ch（xa） | exp008-011 |
 | [data_v6/](../data_v6/README.md) | **MASTU_simple** 五配置 | 129² | 各 500/100/200 | 21ch（coil） | exp012 |
+| [data_gspack2_v1/](../data_gspack2_v1/README.md) | **MAST（gspack2_TRAE 复刻）** DN+SN | 65² | 首批各 1500（可 top-up） | 18ch（coil） | exp201/202 |
 
 ## 实验台账
 
@@ -63,6 +64,8 @@ dn_fno_2608/
 | [exp011_coil_input_v5](exp011_coil_input_v5/README.md) | data_v5 18ch coil 混合 | DN 0.841% / SN 0.948% / 整体 0.894% | **端到端 psi 生成**：只给可测量量直接出物理正确的场；位形识别为隐含能力 |
 | [exp012_coil_input_v6](exp012_coil_input_v6/README.md) | data_v6 21ch coil 五配置混合 | eval_all 3.435%；sn 8.988%；snow_double 1.307% | 五配置混合成立；雪点/limiter 桶最优；**sn 桶异常 = 真值数据质量问题**（data_v6 README §8.1） |
 | [exp013_clean_v6](exp013_clean_v6/README.md) | data_v6_clean 21ch coil（剔除病态+补足） | eval_all 3.045%；sn 7.738%；snow_double 1.074% | **清洗收益分解**：dn −10.7%/snow_double −9.6% 为模型真实收益（同 test 集）；sn −13.9% 主要来自 test 剔除病态（模型原 test +3.1% 未变强，剔除过量警示） |
+| [exp201_pino_rhs_mix_gspack2_n500](exp201_pino_rhs_mix_gspack2_n500/README.md) | **data_gspack2_v1**（gspack2_TRAE 求解，MAST 11 线圈复刻）dn+sn 混合 18ch coil（无 config，同 exp103 口径） | rel_l2_total **1.197%**（DN 1.06% / SN 1.33%） | exp103（同口径 freegs data_v5，0.703%） | **数据源替换实验**：管线零改动仅换求解包——g2 与 v5 **分布等价**（输入/场统计/频谱/收敛全一致，交叉评估模型互通），但**可达误差下限更高**（~1.1% vs ~0.7%，+0.50pp 超 ±0.2pp 判据）；交叉评估证明差异是数据固有（exp103 模型在 g2 train/test 均 ~1.11%），非训练失败或子集运气；物理残差机制本身在 g2 上成立（GS 残差 pred/truth 同量级、X 点亚厘米、n_xpt_fail=0） |
+| [exp202_pino_twostage_mix_gspack2_n500](exp202_pino_twostage_mix_gspack2_n500/README.md) | 同 exp201 数据（g2 dn+sn 混合 18ch coil，同 exp104 口径） | rel_l2_total **1.316%**（DN 1.17% / SN 1.46%）；Ip 0.935%；J mask 2.82% | exp104（同口径 v5，0.76% / Ip 0.21% / J 1.55%） | **两阶段在 g2 上机制成立但全面退化**：+0.56pp 与 exp201 的 +0.50pp 同量级（g2 固有下限两做法一致 ~1.1%，exp104 模型在 g2 上 1.13% 佐证）；J/Ip 退化是 psi 的 2 倍+（J 是二阶导数场，微结构差异被放大；Ip 下限被 g2 数据内重构精度 0.58% 抬高，0.935% 不代表约束失效）；阶段切换 e61 正常、ramp 无爆炸 |
 
 > 几何指标 v2（2026-08-17）：exp008/009/010 已按"真值基准 X 点配对 + 射线法
 > 分离面"重评估（旧版 sep_mean 数十 cm 为 find_critical 假鞍点伪差），几何数字
