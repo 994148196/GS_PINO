@@ -1,0 +1,39 @@
+{
+  "config": "snow_single",
+  "n": 80,
+  "n_jobs": 24,
+  "n_accepted_raw": 42,
+  "acceptance_raw": 0.525,
+  "wall_min": 6.33,
+  "solve_time_s": {
+    "mean": 70.85,
+    "max": 169.24
+  },
+  "n_iter": {
+    "mean": 96.5,
+    "max": 200
+  },
+  "psi_relchange_final_max": 0.001177803031168878,
+  "gs_true": {
+    "min": 4.880147457122803,
+    "mean": 8.847,
+    "max": 18.35405731201172,
+    "frac_gt_15": 0.023809523809523808
+  },
+  "midplane_ratio": {
+    "min": 0.0005403166287578642,
+    "mean": 0.457,
+    "frac_lt_0": 0.0,
+    "frac_lt_005": 0.047619047619047616
+  },
+  "zaxis_ratio": {
+    "mean": 0.266,
+    "max": 0.4110869765281677,
+    "frac_gt_05": 0.0
+  },
+  "n_accepted_gated": 41,
+  "acceptance_gated": 0.5125,
+  "gate_fail_breakdown": {
+    "gs_true": 1
+  }
+}

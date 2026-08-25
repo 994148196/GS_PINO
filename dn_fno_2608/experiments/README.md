@@ -45,6 +45,7 @@ dn_fno_2608/
 | [data_v5/](../data_v5/README.md) | **MAST** DN+SN | 65² | 各 3000 | 18ch（coil）/13ch（xa） | exp008-011 |
 | [data_v6/](../data_v6/README.md) | **MASTU_simple** 五配置 | 129² | 各 500/100/200 | 21ch（coil） | exp012 |
 | [data_gspack2_v1/](../data_gspack2_v1/README.md) | **MAST（gspack2_TRAE 复刻）** DN+SN | 65² | 首批各 1500（可 top-up） | 18ch（coil） | exp201/202 |
+| [data_gspack2_v2/](../data_gspack2_v2/README.md) | **MASTU_simple（gspack2_TRAE 复刻）** 五配置，**SN 生成侧硬门**（病态 0） | 129² | 各 500/100/200 | 21ch（coil） | exp203 |
 
 ## 实验台账
 
@@ -66,6 +67,7 @@ dn_fno_2608/
 | [exp013_clean_v6](exp013_clean_v6/README.md) | data_v6_clean 21ch coil（剔除病态+补足） | eval_all 3.045%；sn 7.738%；snow_double 1.074% | **清洗收益分解**：dn −10.7%/snow_double −9.6% 为模型真实收益（同 test 集）；sn −13.9% 主要来自 test 剔除病态（模型原 test +3.1% 未变强，剔除过量警示） |
 | [exp201_pino_rhs_mix_gspack2_n500](exp201_pino_rhs_mix_gspack2_n500/README.md) | **data_gspack2_v1**（gspack2_TRAE 求解，MAST 11 线圈复刻）dn+sn 混合 18ch coil（无 config，同 exp103 口径） | rel_l2_total **1.197%**（DN 1.06% / SN 1.33%） | exp103（同口径 freegs data_v5，0.703%） | **数据源替换实验**：管线零改动仅换求解包——g2 与 v5 **分布等价**（输入/场统计/频谱/收敛全一致，交叉评估模型互通），但**可达误差下限更高**（~1.1% vs ~0.7%，+0.50pp 超 ±0.2pp 判据）；交叉评估证明差异是数据固有（exp103 模型在 g2 train/test 均 ~1.11%），非训练失败或子集运气；物理残差机制本身在 g2 上成立（GS 残差 pred/truth 同量级、X 点亚厘米、n_xpt_fail=0） |
 | [exp202_pino_twostage_mix_gspack2_n500](exp202_pino_twostage_mix_gspack2_n500/README.md) | 同 exp201 数据（g2 dn+sn 混合 18ch coil，同 exp104 口径） | rel_l2_total **1.316%**（DN 1.17% / SN 1.46%）；Ip 0.935%；J mask 2.82% | exp104（同口径 v5，0.76% / Ip 0.21% / J 1.55%） | **两阶段在 g2 上机制成立但全面退化**：+0.56pp 与 exp201 的 +0.50pp 同量级（g2 固有下限两做法一致 ~1.1%，exp104 模型在 g2 上 1.13% 佐证）；J/Ip 退化是 psi 的 2 倍+（J 是二阶导数场，微结构差异被放大；Ip 下限被 g2 数据内重构精度 0.58% 抬高，0.935% 不代表约束失效）；阶段切换 e61 正常、ramp 无爆炸 |
+| [exp203_pino_rhs_g3_n500](exp203_pino_rhs_g3_n500/README.md) | **data_gspack2_v2**（gspack2_TRAE 生成 MASTU_simple 五配置，129² 21ch，SN 生成侧硬门）五配置混合 | rel_l2_total **2.963%**（dn 3.02 / **sn 7.72** / snow_single 1.64 / snow_double 1.00 / limiter 1.43）｜ **数据质量：SN 病态 0/200、gs_true>15 0/200（v6 raw 26/200）、filter_v6 复核 0 条** | exp105（v6_clean 2.362% / sn 5.882%） | **数据质量目标达成、误差目标未达成（诚实负面结果）**：SN 生成侧硬门全部生效（病态 0、门全过、15 split 移除 0 条），但六桶误差全面差于 exp105（all +0.60pp、sn **+1.84pp** 最差）；双向交叉评估证明差异在**数据侧固有且不互通**（同一模型跨数据 +1.28~+1.73pp；exp105 模型测 g3 3.642%、exp203 模型测 v6_clean 4.689%）——gspack 与 freegs_snow 数值求解差异在五配置下比 exp201 更显著；分布统计全部一致 → **"更干净"≠"更容易学"**，质量与可学习性是两个正交维度 |
 
 > 几何指标 v2（2026-08-17）：exp008/009/010 已按"真值基准 X 点配对 + 射线法
 > 分离面"重评估（旧版 sep_mean 数十 cm 为 find_critical 假鞍点伪差），几何数字

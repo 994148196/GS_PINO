@@ -1,0 +1,92 @@
+{
+ "dn/train": {
+  "n": 500,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "dn/val": {
+  "n": 100,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "dn/test": {
+  "n": 200,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "sn/train": {
+  "n": 497,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "sn/val": {
+  "n": 98,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "sn/test": {
+  "n": 200,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "snow_single/train": {
+  "n": 500,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "snow_single/val": {
+  "n": 100,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "snow_single/test": {
+  "n": 200,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "snow_double/train": {
+  "n": 500,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "snow_double/val": {
+  "n": 100,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "snow_double/test": {
+  "n": 200,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "limiter/train": {
+  "n": 500,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "limiter/val": {
+  "n": 100,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ },
+ "limiter/test": {
+  "n": 200,
+  "n_removed": 0,
+  "removed_idx": [],
+  "removed_vals": []
+ }
+}
