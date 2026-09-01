@@ -114,6 +114,25 @@ class _UpBlock(nn.Module):
         return self.conv(torch.cat([x, skip], dim=1))
 
 
+class _UpFNOBlock(nn.Module):
+    """Spectral decoder path (exp305): same bilinear-up + skip concat as
+    _UpBlock, but the second 3x3 conv is replaced by an FNOBlock — the
+    upsampling path mixes in Fourier space too. The first 3x3 conv is kept
+    (channel fusion of up + skip); FNOBlock is width-preserving."""
+
+    def __init__(self, in_channels: int, out_channels: int,
+                 modes1: int, modes2: int):
+        super().__init__()
+        self.fuse = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+        self.spectral = FNOBlock(out_channels, modes1, modes2)
+
+    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear",
+                          align_corners=False)
+        x = F.gelu(self.fuse(torch.cat([x, skip], dim=1)))
+        return self.spectral(x)
+
+
 # ---------------------------------------------------------------------------
 # exp301 — U-Net (plain CNN)
 # ---------------------------------------------------------------------------
@@ -177,7 +196,12 @@ class UFNO2d2608(nn.Module):
     def __init__(self, in_channels: int = 18, out_channels: int = 2,
                  widths: tuple = (64, 64, 32, 32),
                  modes: tuple = ((16, 16), (16, 16), (8, 8), (4, 4)),
-                 bottleneck_modes: tuple = (4, 4)):
+                 bottleneck_modes: tuple = (4, 4),
+                 bottleneck_layers: int = 1,
+                 dec_modes: tuple | None = None):
+        """bottleneck_layers > 1 stacks FNOBlocks at the bottom level;
+        dec_modes != None swaps the plain-conv decoder for spectral _UpFNOBlocks
+        (exp305 tuning; the default keeps the exp302 behavior exactly)."""
         super().__init__()
         assert len(widths) == len(modes) == 4
         self.lift = nn.Conv2d(in_channels, widths[0], 1)
@@ -188,11 +212,18 @@ class UFNO2d2608(nn.Module):
             trans = nn.Conv2d(prev, w, 1) if prev != w else nn.Identity()
             self.enc.append(nn.Sequential(trans, FNOBlock(w, m1, m2)))
             prev = w
-        self.bottleneck = FNOBlock(widths[-1], *bottleneck_modes)
+        self.bottleneck = nn.Sequential(*[
+            FNOBlock(widths[-1], *bottleneck_modes)
+            for _ in range(bottleneck_layers)
+        ])
         self.dec = nn.ModuleList()
         for d in reversed(range(4)):
             below = widths[d + 1] if d + 1 < 4 else widths[-1]
-            self.dec.append(_UpBlock(below + widths[d], widths[d]))
+            if dec_modes is None:
+                self.dec.append(_UpBlock(below + widths[d], widths[d]))
+            else:
+                self.dec.append(_UpFNOBlock(below + widths[d], widths[d],
+                                            *dec_modes[len(self.dec)]))
         self.proj = nn.Conv2d(widths[0], out_channels, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -214,6 +245,20 @@ class UFNO2d2608(nn.Module):
 
 def _build_ufno2d2608(**overrides) -> UFNO2d2608:
     kwargs = dict(in_channels=18, out_channels=2)
+    kwargs.update(overrides)
+    return UFNO2d2608(**kwargs)
+
+
+def _build_ufno2d2608_tuned(**overrides) -> UFNO2d2608:
+    """exp305: exp302 + 65x65-layer modes 16x16 -> 20x20 (the only layer below
+    its min-guard ceiling: 32^2 cap is 17, 16^2 cap is 9, 8^2 cap is 5),
+    bottleneck stacked 1 -> 2, and the plain-conv decoder swapped for spectral
+    _UpFNOBlocks (modes per upsampled resolution). ~3.6M params — still below
+    the FNO baseline's 4.21M."""
+    kwargs = dict(in_channels=18, out_channels=2,
+                  modes=((20, 20), (16, 16), (8, 8), (4, 4)),
+                  bottleneck_layers=2,
+                  dec_modes=((4, 4), (8, 8), (8, 8), (8, 8)))
     kwargs.update(overrides)
     return UFNO2d2608(**kwargs)
 
@@ -347,13 +392,22 @@ class PIDeepONet2d(nn.Module):
     """
 
     def __init__(self, in_channels: int = 18, out_channels: int = 2,
-                 p: int = 256, hidden: int = 256, layers: int = 3):
+                 p: int = 256, hidden: int = 256, layers: int = 3,
+                 ff_l: int = 0):
         super().__init__()
         self.in_channels, self.out_channels = in_channels, out_channels
+        self.ff_l = ff_l
         branch_in = in_channels - 2
         self.branch_psi = _MLP(branch_in, hidden, layers, p)
         self.branch_j = _MLP(branch_in, hidden, layers, p) if out_channels > 1 else None
-        self.trunk = _MLP(2, hidden, layers, p)
+        # ff_l > 0: NeRF-style multiscale Fourier features on (R,Z) — the trunk
+        # sees gamma(x) = [x, sin(2^k pi x), cos(2^k pi x)] for k < ff_l
+        # (2(1+2*ff_l) inputs). Exp308 tuning: the trunk is a pointwise MLP, and
+        # J is psi's second derivative, so high-frequency recovery benefits from
+        # explicit frequency channels (the k=ff_l-1 term stays below the grid
+        # Nyquist: 2^(ff_l-1)*pi <= pi / dx with dx = 2/64).
+        trunk_in = 2 * (1 + 2 * ff_l) if ff_l > 0 else 2
+        self.trunk = _MLP(trunk_in, hidden, layers, p)
         with torch.no_grad():
             self.trunk.net[-1].weight.mul_(0.1)
             self.trunk.net[-1].bias.mul_(0.1)
@@ -362,6 +416,12 @@ class PIDeepONet2d(nn.Module):
         batch, _, height, width = x.shape
         br_in = x[:, 2:].mean(dim=(2, 3))                      # (B, branch_in)
         tr_in = x[:, 0:2].reshape(batch, 2, -1).transpose(1, 2)  # (B, N, 2)
+        if self.ff_l > 0:
+            feats = [tr_in]
+            for k in range(self.ff_l):
+                f = (2.0 ** k) * math.pi
+                feats += [torch.sin(f * tr_in), torch.cos(f * tr_in)]
+            tr_in = torch.cat(feats, dim=-1)                   # (B, N, 2(1+2L))
         t = self.trunk(tr_in)                                  # (B, N, p)
         psi = torch.einsum("bp,bnp->bn", self.branch_psi(br_in), t)
         if self.branch_j is not None:
@@ -381,6 +441,25 @@ def _build_pideeponet2d(**overrides) -> PIDeepONet2d:
     return PIDeepONet2d(**kwargs)
 
 
+def _build_pideeponet2d_wide(**overrides) -> PIDeepONet2d:
+    """exp307: exp304 with branch/trunk width p=hidden=256 -> 384 (~1.35M
+    params, 2.2x exp304) — J/Ip are psi's second-derivative fields and were
+    2x weaker in exp304; the README listed this as the direct capacity fix."""
+    kwargs = dict(in_channels=18, out_channels=2, p=384, hidden=384)
+    kwargs.update(overrides)
+    return PIDeepONet2d(**kwargs)
+
+
+def _build_pideeponet2d_ff(**overrides) -> PIDeepONet2d:
+    """exp308: deeponet_wide + NeRF-style multiscale Fourier features on the
+    trunk input (ff_l=6, top frequency 2^5*pi = 32pi, below the grid Nyquist
+    pi/dx = 32pi at dx = 2/64). The exp307 -> exp308 increment isolates the
+    Fourier-feature contribution."""
+    kwargs = dict(in_channels=18, out_channels=2, p=384, hidden=384, ff_l=6)
+    kwargs.update(overrides)
+    return PIDeepONet2d(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # registry / dispatcher (the only API train_pino / evaluate_pino need)
 # ---------------------------------------------------------------------------
@@ -391,6 +470,11 @@ MODEL_REGISTRY = {
     "ufno": _build_ufno2d2608,
     "fnokan": _build_fnokan2d2608,
     "deeponet": _build_pideeponet2d,
+    # exp3xx tuning variants (exp305/307/308): the tuned builds hard-code their
+    # architecture kwargs so train/evaluate agree on both sides of a checkpoint
+    "ufno_tuned": _build_ufno2d2608_tuned,
+    "deeponet_wide": _build_pideeponet2d_wide,
+    "deeponet_ff": _build_pideeponet2d_ff,
 }
 
 

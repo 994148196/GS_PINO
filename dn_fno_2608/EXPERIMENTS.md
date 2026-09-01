@@ -1,5 +1,8 @@
-# dn_fno_2608 改进实验总览（exp001–exp203、exp301–304）
+# dn_fno_2608 改进实验总览（exp001–exp203、exp301–308）
 
+> 2026-09-01 更新（exp305–308：UFNO/DeepONet 调优——UFNO 架构侧边际小胜
+> 0.7147%、训练侧负收益 0.7794%；DeepONet 加宽成功 0.7575%（Ip −45% 反超
+> UFNO）、傅里叶特征与逐点 FD 物理项不兼容失败）。
 > 2026-09-01 更新（exp301–304：GS ψ 预测的物理约束网络架构对比——UNet/UFNO/
 > FNO-KAN/PI-DeepONet 四骨架，exp102 同口径两阶段，见 ARCHS_SURVEY.md）。
 > 2026-08-25 更新（exp203：数据源替换 + SN 生成侧质量修复——data_gspack2_v2）。
@@ -102,6 +105,26 @@ e300 兜底、X 点 1.83/2.32 cm、GS 残差 4.3×——局部感受野不足承
 分解 > 纯局部卷积）是本问题的决定因素；UFNO 为当前最优骨架（精度 +
 参数效率 + 训练速度三赢）。**
 
+**exp305–308 是 exp302/exp304 的调优系列**（2026-09-01，同一数据/方案，
+两个正交方向 × 两个骨架）：
+**UFNO 架构侧边际小胜**（exp305：解码器 conv→FNOBlock 谱化 + bottleneck×2 +
+65² 模态 16→20，2.47M→3.60M 仍 < FNO 4.21M → **0.7147%** vs 0.729%、Ip
+−14%，J/X 略退，全部在单 seed 噪声内；唯一显著行为收益是**阶段1 切换
+e70→e30 翻倍**——exp302 架构已接近本数据上限，进一步改进不在骨架侧）；
+**UFNO 训练侧负收益**（exp306：零代码差分，w_j 2.0/w_pde 0.3/阈值 4%/
+ramp 60 → **0.7794%** +0.05pp，plasma +0.06pp——权重加大挤压 ψ 主任务，
+exp102 权重杠杆已吃满）；**DeepONet 加宽验证容量诊断**（exp307：
+branch/trunk 256→384，0.60M→1.34M → **0.7575%** vs exp304 0.802% −5.6%、
+**Ip 0.210% −45% 反超 UFNO**、J 2.13% −0.48pp、X 点 0.59/0.51 cm——exp304
+"J/Ip 弱是容量不足"被证实，1.34M 参数超越 4.2M FNO，分支-主干路线成为
+第二条可行解）；**trunk 傅里叶特征与逐点 FD 物理项不兼容（失败）**
+（exp308：γ(R,Z) NeRF 式多频编码 ff_l=6，阶段1 正常 e63 切换，阶段2 首段
+pde 22.0（3.4 万倍）、val 2.89%→92.6%，e138 正确早停，artifact 保阶段1
+模型——FF 高频通道注入空间高频、被 GS 残差二阶差分放大，机制性不兼容
+非 bug；修复方向 FF 缩放/ff_l 减小/SIREN）。**调优结论：两骨架的最优
+配置收敛为 exp302（UFNO 0.729%，或 exp305 同精度更快收敛）与 exp307
+（DeepONet wide 0.7575%）；损失权重/FF 方向已排除。**
+
 ---
 
 ## 1. 实验脉络总览
@@ -190,6 +213,10 @@ e300 兜底、X 点 1.83/2.32 cm、GS 残差 4.3×——局部感受野不足承
 | exp302 | data_v5/dn 18ch coil（同 exp102 口径） | **骨架对比：UFNO 多尺度谱**（编码器 4 级 FNOBlock 随分辨率收缩 [64/16²→32/4²] + 普通 conv 解码器，2.47M = FNO 0.59×） | rel_l2_total **0.729%**（plasma 0.82%）｜ GS 残差 0.0150（≈FNO）｜ Ip 0.213% ｜ J mask **1.13%**（−17%）｜ X 点 0.52/0.63 cm | exp102（FNO 0.80%）；exp301（UNet 2.20%） | **全面小幅击败 FNO（系列唯一胜出）**：−9% rel L2、J −17%、X/O 点更准、参数 0.59×——多尺度谱（高分辨率保细节 + 低分辨率承载全局磁面）是有效归纳偏置；与 exp301 纯池化链丢全局直接对照；物理约束机制未受影响（GS 残差同档、切换 e70 正常） |
 | exp303 | data_v5/dn 18ch coil（同 exp102 口径） | **骨架对比：FNO-KAN 混合**（FNO 骨架 + 块内 1×1 conv 换 per-pixel B-spline KAN，grid 4/deg 2，tanh 门控 + 基函数 stop-grad，4.33M）；基函数批量 Cox-de Boor（fwd+bwd 3.2× 加速） | rel_l2_total **0.857%**（plasma 0.99%）｜ GS 残差 0.0172 ｜ Ip 0.238% ｜ J mask 1.45% ｜ X 点 0.67/0.71 cm | exp102（FNO 0.80%）；KAN 轨点式 20.87%（失败） | **机制成立、增益为零（诚实中性结果）**：切换 e31 正常、阶段2 平滑收敛无 NaN，全部指标与 FNO 差 ≤0.1pp——KANO"变系数需可学习激活"论点在 65²×16×16 模态下未转化（R 因子变化被谱核充分捕获）；成本 4× 训练时长 + 3% 参数；与点式 KAN 合证"KAN 可工作但不更好" |
 | exp304 | data_v5/dn 18ch coil（同 exp102 口径） | **骨架对比：PI-DeepONet**（分支 ×2 MLP 吃 16 标量 + 共享 trunk MLP 吃 (R,Z)，einsum 点积输出，trunk 末层 ×0.1 初始化，0.60M = FNO 1/7） | rel_l2_total **0.802%**（plasma 0.92%）｜ GS 残差 0.0298（2× FNO）｜ Ip 0.384%（1.8×）｜ J mask 2.61%（1.9×）｜ X 点 0.73/0.70 cm | exp102（FNO 0.80%） | **容量奇迹**：0.6M 参数 psi 精度与 FNO 统计不可区分、训练最快（~20 min）、切换 e42 正常——分支-主干分解与本问题标量输入→场输出精确同构（SUNIST-2 路线复现）；J/Ip 通道弱 2× 为容量分配（二阶导场需容量），下游需要 J/Ip 时加宽即可 |
+| exp305 | data_v5/dn 18ch coil（同 exp102 口径） | **调优：UFNO 架构侧**（解码器 conv→FNOBlock 谱化 dec 4/8/8/8 + bottleneck 1→2 层 + 65² 模态 16→20，2.47M→3.60M 仍 < FNO 4.21M） | rel_l2_total **0.7147%**（plasma 0.81%）｜ GS 残差 0.0146 ｜ Ip 0.182%（−14%）｜ J mask 1.20%（+0.07）｜ X 点 0.63/0.61 cm | exp302（UFNO 0.729%） | **架构调优边际小胜（单 seed 噪声内）**：−2% rel L2、Ip −14%，J/X 略退；**最显著行为收益 = 阶段1 切换 e70→e30 翻倍**（解码器谱化让高分辨率细节提前就位）——exp302 架构已接近本数据上限，进一步改进不在骨架侧 |
+| exp306 | data_v5/dn 18ch coil（同 exp102 口径） | **调优：UFNO 训练侧（零代码差分）**：w_j 1.0→2.0、w_pde 0.1→0.3、stage1 阈值 3%→4%、ramp 30→60（args.json 四参数即全部差异） | rel_l2_total **0.7794%**（plasma 0.88%）｜ GS 残差 0.0138（−8%）｜ Ip 0.240%（+0.03）｜ J mask 1.14% | exp302（UFNO 0.729%） | **训练侧调优负收益**：w_pde/w_j 加大把梯度从 ψ 主任务抽走（plasma +0.06pp、总 +0.05pp），仅 GS 残差改善——§6 预判的"权重失衡"应验；4% 阈值提前切换（e31）无净收益；exp102 权重杠杆已吃满，改进不在损失权重 |
+| exp307 | data_v5/dn 18ch coil（同 exp102 口径） | **调优：DeepONet 加宽**（branch/trunk 256→384，0.60M→1.34M = 2.2×；trunk 末层 ×0.1 同 exp304） | rel_l2_total **0.7575%**（plasma 0.87%）｜ GS 残差 0.0234（exp304 0.0298）｜ **Ip 0.210%（−45%，反超 UFNO）**｜ J mask 2.13%（−0.48pp）｜ X 点 0.59/0.51 cm | exp304（DeepONet 0.802%）；exp102（FNO 0.80%） | **加宽验证容量诊断（DeepONet 正面答案）**：总误差 −5.6%（低于 FNO 0.800%）、J/Ip 短板大幅修复（Ip 与 exp302 打平）、X 点 −19%/−27%——exp304 "J/Ip 弱是容量不足"被证实；1.34M 参数超越 4.2M FNO，分支-主干路线成为 UFNO 之外第二条可行解 |
+| exp308 | data_v5/dn 18ch coil（同 exp102 口径） | **调优：DeepONet 加宽 + trunk 傅里叶特征**（γ(R,Z) NeRF 式多频 ff_l=6，最高频 32π=Nyquist；1.35M） | **失败**：阶段1 正常（切换 e63、val 2.89%），阶段2 首段 pde 22.0（exp307 同刻 6.6e-4，3.4 万倍）、val 2.89%→92.6%，75 epochs 未恢复 → e138 正确早停（artifact 为阶段1 模型，test 2.539% 无意义） | exp307（0.7575%） | **trunk 傅里叶特征与逐点 FD 物理残差不兼容（诚实负面结果）**：FF 高频通道注入空间高频 → GS 残差二阶差分放大 → 物理项梯度风暴；排他证据：exp307 同配置无 FF 正常、自测/冒烟有限——非 bug 是机制性不兼容；修复方向：FF 输入小缩放 / ff_l 减小 / SIREN 可学习频率 |
 
 v3→v4 恢复倍数（同模型同 N）：A 9.2× ｜ A' **49×** ｜ B 25×。
 exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST）与位形
@@ -277,11 +304,14 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
   阶段2 窗口被早停压缩而自洽未建立）。后续方向：exp106 修复（阈值放宽
   4–5% / 切换后重置 patience / 阶段2 加长）、全量 N=2000、
   `--pde-mask-erode` 边界差分消融、w_pde 分桶加权（sn/limiter 桶拉紧）。
-- **骨架对比（exp301–304）**：UFNO 已是最优骨架（0.729%，FNO 0.59×
-  参数）——后续方向：UFNO 换 data_v6_clean 五配置/混合数据（验证多尺度
-  谱在跨位形下的推广）、UFNO 全量 N=2000、DeepONet 加宽后重测 J/Ip
-  通道（0.6M→1.2M，预期 J/Ip 收敛）、FNOKAN 降 grid 或改稀疏基函数
-  测成本-精度曲线（当前 4× 时长无收益，除非数据/位形复杂度上升）。
+- **骨架对比与调优（exp301–308）**：UFNO 与 DeepONet 的最优配置已收敛——
+  **UFNO 0.729%（exp302，或 exp305 同精度阶段1 收敛翻倍）**、**DeepONet
+  加宽 0.7575%（exp307，J/Ip 短板修复）**；训练侧权重（exp306）与 trunk
+  傅里叶特征（exp308）已排除。后续方向：最优配置（exp302/305 + exp307）
+  换 data_v6_clean 五配置/混合数据（验证跨位形推广）、全量 N=2000、
+  3-seed 平均确认 0.71 vs 0.73 的差异显著性、exp308 修复（FF 输入小缩放
+  /ff_l 减小/SIREN，已知不兼容机制）、FNOKAN 降 grid 或改稀疏基函数测
+  成本-精度曲线（当前 4× 时长无收益，除非数据/位形复杂度上升）。
 - **延迟/部署**：复现阶段已证 GPU 前向 1.6 ms（665× vs freegs）；UFNO
   （参数 0.59×）延迟同档或更好，直接沿用。
 
@@ -303,6 +333,8 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 | exp103/104_pino_*_mix_n500/ | 同上两做法在**混合 DN+SN**（coil 18ch 无 config）上的推广：README（结论速览 + 混合池统计 + 三桶结果表：all/dn/sn）+ eval_all\|dn\|sn/ + figures_all\|dn\|sn/（exp011 风格 fig1/2/3 + stats_per_sample.json，twostage fig1 含 J 行/fig2 含 Ip·J 直方图）+ train/eval_*.log（日志落各自实验目录） |
 | exp105/106_pino_*_v6clean_n500/ | 同上两做法在 **data_v6_clean 五配置混合**（21ch、129²、MASTU_simple）上的推广：README（结论速览 + 混合池统计 + 六桶结果表：all + dn/sn/snow_single/snow_double/limiter）+ eval_all\|5 配置/ + figures_all\|5 配置/（exp011 风格，fig3 含 limiter 全 NaN 防护）+ train/eval_*.log（日志落各自实验目录） |
 | exp201/202_pino_*_gspack2_n500/ | 同上两做法在 **data_gspack2_v1**（gspack2_TRAE 求解的 MAST 11 线圈复刻，18ch coil 无 config）上的**数据源替换**复现：README（结论速览 + 诊断链 [交叉评估矩阵] + 三桶结果表）+ eval_all\|dn\|sn/ + eval_x_v5all/（g2 模型交叉评估 v5 test）+ figures_all\|dn\|sn/ + train/eval_*.log |
+| exp305/306_pino_*_n500/ | **UFNO 调优**：exp305 架构侧（解码器谱化 + bottleneck×2 + 模态 20×20，0.7147% 边际小胜、阶段1 收敛翻倍）/ exp306 训练侧（w_j 2.0/w_pde 0.3/阈值 4%/ramp 60，0.7794% 负收益）；README（18ch 通道表 + 结果表 + 归因分析）+ figures/ + train/eval.log |
+| exp307/308_pino_*_n500/ | **DeepONet 调优**：exp307 加宽（256→384，0.7575%、Ip −45% 反超 UFNO、J −0.48pp）/ exp308 加宽 + trunk 傅里叶特征（**失败**：阶段2 物理项梯度风暴，README 含三证据链崩溃归因）；README + figures/ + train/eval.log |
 
 ## 8. 可视化产物
 
