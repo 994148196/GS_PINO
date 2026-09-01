@@ -267,6 +267,7 @@ def build_cfg_g3(machine: str = "mastu_g3", config: str = "dn",
                  save_constraint_diag: bool = False,
                  xpt_r0: float | None = None, xpt_z0: float | None = None,
                  order: int = ORDER, method: str = METHOD,
+                 maxits: int | None = None,
                  sn_midplane_ratio_min: float | None = SN_MIDPLANE_RATIO_MIN,
                  sn_zaxis_ratio_max: float | None = SN_ZAXIS_RATIO_MAX,
                  max_gs_true: float | None = GS_TRUE_MAX,
@@ -292,7 +293,7 @@ def build_cfg_g3(machine: str = "mastu_g3", config: str = "dn",
         "machine": spec.get("machine", machine),
         "machine_factory": MACHINE_FACTORIES_G3[spec.get("machine", machine)],
         "nx": NX, "ny": NY, "order": order, "method": method,
-        "maxits": MAXITS,
+        "maxits": MAXITS if maxits is None else maxits,
         "has_wall": spec.get("has_wall", True),
         "param_ranges": spec.get("param_ranges", g5.MASTU_PARAM_RANGES),
         "anchor_r_range": spec.get("anchor_r_range", g5.MASTU_ANCHOR_R_RANGE),
@@ -1057,6 +1058,7 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
              save_constraint_diag: bool = False,
              config: str = "dn", machine: str = "mastu_g3",
              order: int = ORDER, method: str = METHOD,
+             maxits: int | None = None,
              sn_midplane_ratio_min: float | None = SN_MIDPLANE_RATIO_MIN,
              sn_zaxis_ratio_max: float | None = SN_ZAXIS_RATIO_MAX,
              max_gs_true: float | None = GS_TRUE_MAX,
@@ -1067,7 +1069,7 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
                        max_isoflux_residual, max_xpt_deviation,
                        min_anchor_xpt_dist, require_wall, min_core_depth,
                        save_constraint_diag, xpt_r0, xpt_z0,
-                       order, method,
+                       order, method, maxits,
                        sn_midplane_ratio_min, sn_zaxis_ratio_max,
                        max_gs_true, max_snow_xpt_dev)
 
@@ -1107,7 +1109,7 @@ def generate(out_dir: str, split: str, n_samples: int, seed: int,
     else:
         print(f"  X-pts ({cfg['xpt_r0']},+-{cfg['xpt_z0']}) R+-{xpt_jitter} / "
               f"Z+-{xpt_jitter_z} m, isoflux->sampled, gamma={GAMMA}, "
-              f"maxits={MAXITS}")
+              f"maxits={cfg['maxits']}")
     gates = []
     if cfg["sn_midplane_ratio_min"] is not None:
         gates.append(f"SN midplane_ratio>={cfg['sn_midplane_ratio_min']}")
@@ -1208,6 +1210,9 @@ def main() -> None:
                         help="FDM order (default 2 = freegs 同阶; 4 = 探针对照)")
     parser.add_argument("--method", type=str, default=METHOD, choices=["lu", "auto"],
                         help="sparse solver (default lu; auto = AMG on 129^2)")
+    parser.add_argument("--maxits", type=int, default=None,
+                        help="常规分支（dn/sn）Picard maxits 覆盖（默认 MAXITS=80；"
+                             "sn 修复探针传 200 对齐 v6 SNOWFLAKE_MAXITS）")
     parser.add_argument("--sn-midplane-ratio-min", type=float, default=None,
                         help="SN midplane_ratio gate (default = data_v6_clean "
                              "口径扩展 0.05; None = 报告不判定)")
@@ -1237,7 +1242,7 @@ def main() -> None:
                  args.max_xpt_deviation, args.min_anchor_xpt_dist,
                  args.require_wall, args.coil_margin, args.min_core_depth,
                  args.save_constraint_diag, args.config, args.machine,
-                 args.order, args.method,
+                 args.order, args.method, args.maxits,
                  args.sn_midplane_ratio_min, args.sn_zaxis_ratio_max,
                  args.max_gs_true, args.max_snow_xpt_dev)
 

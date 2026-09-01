@@ -46,10 +46,11 @@ dn_fno_2608/data_v6_clean/**
 !dn_fno_2608/data_v6_clean/manifest.json
 !dn_fno_2608/data_v6_clean/scores.json
 
-# data_gspack2_v2 生成数据（gspack2_TRAE MASTU_simple 五配置复刻，npz 可再生成，不入库；README/探针/scores 入库）
+# data_gspack2_v2 生成数据（gspack2_TRAE MASTU_simple 五配置复刻，npz 可再生成，不入库；README/探针 JSON/scores 入库）
 dn_fno_2608/data_gspack2_v2/**
 !dn_fno_2608/data_gspack2_v2/README.md
-!dn_fno_2608/data_gspack2_v2/_probe/**
+!dn_fno_2608/data_gspack2_v2/_probe/
+!dn_fno_2608/data_gspack2_v2/_probe/*.json
 !dn_fno_2608/data_gspack2_v2/scores.json
 
 # KAN OOD 生成数据（可再生成，688MB 不入库）
