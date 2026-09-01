@@ -45,8 +45,8 @@ from gs_pino_dn_fno_2608.evaluate_dn_fno import (
     match_xpoints_and_axis,
     separatrix_pts,
 )
-from gs_pino_dn_fno_2608.model_dn_fno import build_model
 from gs_pino_dn_fno_2608.visualize_dn_fno import get_machine_geometry, plot_field
+from gs_pino_fno_phys.models_alt import build_model
 from gs_pino_fno_phys.data_pino import DNPinoDataset
 from gs_pino_fno_phys.losses_pino import denorm_j, denorm_psi
 
@@ -59,7 +59,10 @@ def load_checkpoint(path: str):
     stats = ckpt["stats"]
     mode = ckpt["mode"]
     out_channels = 2 if mode == "twostage" else 1
-    model = build_model(in_channels=2 + len(stats["scalar_mean"]),
+    # exp3xx checkpoints record the backbone; exp101-203 have no "model" key
+    # -> default fno2d2608 (backward compatible)
+    model = build_model(ckpt.get("model", "fno2d2608"),
+                        in_channels=2 + len(stats["scalar_mean"]),
                         out_channels=out_channels)
     model.load_state_dict(ckpt["model_state"])
     model.eval()

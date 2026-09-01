@@ -31,7 +31,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from gs_pino_dn_fno_2608.data_dn_fno import nested_train_indices, rel_l2_normalized
-from gs_pino_dn_fno_2608.model_dn_fno import build_model
+from gs_pino_fno_phys.models_alt import MODEL_REGISTRY, build_model
 from gs_pino_fno_phys.data_pino import DNPinoDataset
 from gs_pino_fno_phys.losses_pino import (
     denorm_j,
@@ -96,6 +96,9 @@ def main() -> None:
                     help="rhs: single-stage PDE residual from dataset RHS; "
                          "twostage: stage-1 supervised psi+J, stage-2 adds "
                          "self-consistent PDE + Ip")
+    ap.add_argument("--model", choices=list(MODEL_REGISTRY), default="fno2d2608",
+                    help="backbone architecture (fno2d2608 = exp102 baseline, "
+                         "default); exp3xx: unet / ufno / fnokan / deeponet")
     ap.add_argument("--train-data", required=True)
     ap.add_argument("--val-data", required=True)
     ap.add_argument("--n-train", type=int, default=500)
@@ -147,7 +150,7 @@ def main() -> None:
 
     # ---- model (psi_plasma 1ch / psi_plasma+J 2ch) / optimizer / scheduler ----
     out_channels = 2 if args.mode == "twostage" else 1
-    model = build_model(in_channels=2 + len(stats["scalar_mean"]),
+    model = build_model(args.model, in_channels=2 + len(stats["scalar_mean"]),
                         out_channels=out_channels).to(device)
     n_params = model.count_params()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
@@ -163,8 +166,8 @@ def main() -> None:
     w_pde, w_ip, w_j = args.phys_weight, args.ip_weight, args.j_weight
 
     print(f"\n{'='*70}")
-    print(f"  FNO+physics training | mode={args.mode} | n_train={args.n_train} "
-          f"| seed={args.seed} | device={device}")
+    print(f"  FNO+physics training | model={args.model} | mode={args.mode} "
+          f"| n_train={args.n_train} | seed={args.seed} | device={device}")
     print(f"  input channels: {2 + len(stats['scalar_mean'])} | output: {out_channels}")
     print(f"  model params: {n_params} | w_pde={w_pde} w_ip={w_ip} w_j={w_j} "
           f"(pde_scale={pde_scale:.3f}, ip_scale={ip_scale:.3g})")
@@ -292,6 +295,7 @@ def main() -> None:
 
     torch.save({
         "model_state": best_state,
+        "model": args.model,
         "best_epoch": best_epoch,
         "best_val_rel_l2": best_val,
         "artifact_stage": artifact_stage,
