@@ -1,5 +1,9 @@
-# dn_fno_2608 改进实验总览（exp001–exp203、exp301–312）
+# dn_fno_2608 改进实验总览（exp001–exp203、exp301–314）
 
+> 2026-09-02 更新（exp314：POD 基 + UNet 残差——基外细节"部分需要"全局
+> 混合，1.508% → 1.099%（−27%），谱混合仍 +0.22pp 边际增益）。
+> 2026-09-02 更新（exp313：POD 基 + 小 FNO 残差混合——exp312 诊断的落地
+> 修复，1.508% → 0.883%（−41%），X 点反超 FNO）。
 > 2026-09-01 更新（exp311/312：第二轮架构候选——TKNO-lite 全局注意力
 > 全面刷新系列纪录 0.635%；POD-DeepONet 低秩先验过度激进 1.508% 诚实负面）。
 > 2026-09-01 更新（exp305–308：UFNO/DeepONet 调优——UFNO 架构侧边际小胜
@@ -150,9 +154,34 @@ N=500 训练子集导出 p_psi=3/p_j=10——**ψ 解空间极低秩本身是数
 ⇒ 线性基够用"被否定（exp307 学习 trunk 的表达超出线性子空间 0.7pp）。
 **当前最优：TKNO-lite 0.635%（exp311）。**
 
----
+**exp313 是 exp312 诊断的落地修复**（2026-09-02）：POD 固定基 + 并联小
+FNO 残差（**PODResidual2d2608**：exp312 的 POD 通道原样保留，叠加
+FNO2d2608 瘦身版 width 32/modes 12×12/4 层 ≈0.59M 学 `y − ψ_pod`，总计
+870K = FNO 的 0.21×）——**分阶段冻结协议**（`--pod-pretrain-epochs 60`：
+e1..60 只训 branch、残差从 0 起步；e61 冻结 branch、解冻残差；阶段1 切换
+挂起到 pretrain 结束，switch_epoch 61 精确吻合）消除通道竞争。结果：test
+rel L2 **0.883%**（POD 1.508% **−41%**）、X 点 0.85 → 0.54/0.56 cm（−36%/
+−34%）、O 点 0.65 → 0.34 cm（−48%）、J 2.52% → 1.76%（−30%）、GS 残差
+0.0812 → 0.0219（−73%）——**"截断的 0.08% 能量恰是 X 点尺度结构"被直接
+证实 + 修复**，残差通道学到的正是基外细节。vs 纯 FNO 0.800% 仍差 0.08pp
+（median 持平 0.645 vs 0.642）但 **X 点反超 FNO**；Ip 0.338% 略退化（残差
+放大 J 自由度：分布更准 1.76 vs 2.52，积分匹配略松 +0.09pp vs POD）；8.3
+min 训练（FNO 的 0.55×）。**混合路线结论：低秩基管大体 + 谱残差补细节
+以 1/5 参数达到 FNO ~90% 精度，是 exp312 负面与 exp102 基线之间的可行
+折中。**
 
-## 1. 实验脉络总览
+**exp314 是 exp313 的残差架构消融（2026-09-02，补 exp301 vs exp313 缺环）**：
+残差通道从小 FNO 换成**纯卷积 UNet**（base 16/depth 4，≈1.23M；exp301
+同构 4 层下采样链，无谱混合/注意力），协议/参数/数据逐项同 exp313。
+结果：test rel L2 **1.099%**（POD 1.508% **−27%**：X 点 0.85 → 0.64 cm、
+O 点 0.65 → 0.36 cm、GS 残差 −62%），但明显弱于 FNO 残差（1.099 vs
+0.883，**+0.22pp**）——**基外细节"部分需要"全局混合**：POD 基承担全局
+形状后，残差通道的全局性需求大幅下降（完整任务下纯卷积 = FNO 的 2.75×
+差距 → 残差任务下 1.25×），但谱混合仍提供 X 点 −0.1 cm 级别的边际增益。
+**混合框架稳健性**：即使残差用系列最弱架构（完整任务 2.202%），POD+残差
+仍保底 −27%——"低秩基 + 任意残差"都优于纯低秩基，残差架构只决定剩余
+差距。残差架构排名：FNO（0.883%）> UNet（1.099%）。UNet 残差收敛慢
+（best e796 跑满 800 epochs，12.7 min）。
 
 ```
 论文复现（data/、outputs/）──────────────► 冻结基线（test 0.0561% @ N=5000）
@@ -244,6 +273,8 @@ N=500 训练子集导出 p_psi=3/p_j=10——**ψ 解空间极低秩本身是数
 | exp308 | data_v5/dn 18ch coil（同 exp102 口径） | **调优：DeepONet 加宽 + trunk 傅里叶特征**（γ(R,Z) NeRF 式多频 ff_l=6，最高频 32π=Nyquist；1.35M） | **失败**：阶段1 正常（切换 e63、val 2.89%），阶段2 首段 pde 22.0（exp307 同刻 6.6e-4，3.4 万倍）、val 2.89%→92.6%，75 epochs 未恢复 → e138 正确早停（artifact 为阶段1 模型，test 2.539% 无意义） | exp307（0.7575%） | **trunk 傅里叶特征与逐点 FD 物理残差不兼容（诚实负面结果）**：FF 高频通道注入空间高频 → GS 残差二阶差分放大 → 物理项梯度风暴；排他证据：exp307 同配置无 FF 正常、自测/冒烟有限——非 bug 是机制性不兼容；修复方向：FF 输入小缩放 / ff_l 减小 / SIREN 可学习频率 |
 | exp311 | data_v5/dn 18ch coil（同 exp102 口径） | **第二轮架构：TKNO-lite（Transformer 全局注意力）**：conv stem 18→64（65² 细节路径）+ patch 4×4/s2 → 32²=1024 token + 4× pre-LN 自注意力块（8 头，MLP 4×）+ 学习 2D 位置编码 + bilinear skip 解码；**按 exp303 证据剥离 KAN**；`need_weights=False` fused SDPA；1.21M = FNO 0.29× | rel_l2_total **0.635%**（plasma 0.72%）｜ GS 残差 0.0158 ｜ Ip 0.189% ｜ **J mask 0.977%（系列最佳）** ｜ X 点 **0.42/0.43 cm**、O 点 **0.18 cm** | exp305（0.7147%）；exp302（0.729%） | **系列新纪录（−11% vs 上一位）**：全局注意力承载磁面耦合 ≥ 谱混合（对照 exp301/exp302：决定性变量是混合的全局性而非傅里叶实现）；全指标最佳（J −14%、X/O 定位最佳）；代价 = 训练 80.3 min（本构建无 flash 注意力，mem-efficient 后端）；阶段1 e66 切换不慢于谱系 |
 | exp312 | data_v5/dn 18ch coil（同 exp102 口径） | **第二轮架构：POD-DeepONet（SVD 低秩基替代学习 trunk）**：SVD（N=500 训练子集 z 域，能量 99.9% 封顶 256 模态）→ 固定 buffer 基 p_psi=3（99.92%）/p_j=10（99.93%），分支 16→256×3 层 → 13 系数，0.28M = exp307 0.21×；阶段2 物理微调只动系数 | rel_l2_total **1.508%**（plasma 1.69%）｜ GS 残差 0.0812 ｜ Ip 0.253% ｜ J mask 2.52% ｜ X 点 0.85/0.85 cm | exp307（DeepONet wide 0.7575%）；exp304（0.802%） | **低秩先验过度激进（诚实负面）**：p_psi=3 封顶 ~1.5%（exp307 的 2×）——截断的 0.08% 能量恰是 X 点尺度细节（X 点 +0.26 cm、O 点 +0.45 cm）；Ip 0.253% 物理约束在低秩空间仍有效；p_psi=3 本身是数据集结构诊断（coil 分离后 ψ 跨样本变化极低秩）；"数据低秩 ⇒ 线性基够用"被否定（学习 trunk 表达超越线性子空间） |
+| exp313 | data_v5/dn 18ch coil（同 exp102 口径） | **exp312 修复：POD 固定基 + 并联小 FNO 残差**（POD 通道同 exp312 原样 + FNO2d2608 瘦身 width 32/modes 12×12/4 层学 y − ψ_pod，870K = FNO 0.21×；proj ×0.1 小起步）；**分阶段冻结协议** `--pod-pretrain-epochs 60`（e1..60 只训 branch 残差冻结 → e61 冻结 branch 解冻残差学基外细节；阶段1 切换挂起到 pretrain 结束） | rel_l2_total **0.883%**（plasma 1.03%）｜ GS 残差 0.0219（−73% vs POD）｜ Ip 0.338%（+0.09 vs POD）｜ J mask **1.76%**（−30% vs POD）｜ X 点 **0.54/0.56 cm**（−36%/−34% vs POD，反超 FNO）｜ O 点 0.34 cm（−48%） | exp312（POD 1.508%）；exp102（FNO 0.800%） | **exp312 诊断的落地修复（正面）**：残差通道补上 POD 基外细节——总误差 **−41%**、X/O 点/J/GS 残差全面改善（"截断的 0.08% 能量恰是 X 点尺度结构"被证实+修复）；vs 纯 FNO 仍差 0.08pp（median 持平）但 X 点反超；Ip 略退化（残差放大 J 自由度：分布更准、积分略松）；8.3 min 训练 = FNO 0.55×——低秩基 + 谱残差以 1/5 参数达 FNO ~90% 精度，exp312 负面与 exp102 基线之间的可行折中 |
+| exp314 | data_v5/dn 18ch coil（同 exp102 口径） | **exp313 残差架构消融：POD 固定基 + 纯卷积 UNet 残差**（UNet2d2608 瘦身 base 16/depth 4 ≈1.23M，exp301 同构 4 层下采样链无谱混合；1.50M 总参数 = FNO 0.36×）；分阶段冻结协议同 exp313（pretrain 60） | rel_l2_total **1.099%**（plasma 1.28%）｜ GS 残差 0.0307（−62% vs POD）｜ Ip 0.403% ｜ J mask 2.33% ｜ X 点 0.64/0.64 cm（−25% vs POD，≈FNO 全任务）｜ O 点 0.36 cm（−44%） | exp313（POD+FNO 0.883%）；exp301（UNet 全任务 2.202%）；exp312（POD 1.508%） | **基外细节"部分需要"全局混合（部分正面，补 exp301 vs exp313 缺环）**：纯卷积残差把 POD 拉到 1.099%（−27%），但明显弱于 FNO 残差（+0.22pp）——POD 基承担全局形状后残差通道全局性需求大幅下降（完整任务 2.75× 差距 → 残差 1.25×），谱混合仍提供 X 点 −0.1 cm 边际增益；混合框架稳健（最弱残差架构也保底 −27%）；UNet 残差收敛慢（best e796 跑满 800） |
 
 v3→v4 恢复倍数（同模型同 N）：A 9.2× ｜ A' **49×** ｜ B 25×。
 exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST）与位形
@@ -331,18 +362,22 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
   阶段2 窗口被早停压缩而自洽未建立）。后续方向：exp106 修复（阈值放宽
   4–5% / 切换后重置 patience / 阶段2 加长）、全量 N=2000、
   `--pde-mask-erode` 边界差分消融、w_pde 分桶加权（sn/limiter 桶拉紧）。
-- **骨架对比与调优（exp301–312）**：当前最优已更新为 **TKNO-lite 0.635%
+- **骨架对比与调优（exp301–314）**：当前最优已更新为 **TKNO-lite 0.635%
   （exp311，全局注意力）**，第二梯队 **UFNO 0.729%（exp302/exp305）** 与
   **DeepONet 加宽 0.7575%（exp307）**；训练侧权重（exp306）、trunk 傅里叶
-  特征（exp308）、POD 低秩基（exp312，p=3/10 自动判据）已排除。后续方向：
-  最优配置（exp311 优先）换 data_v6_clean 五配置/混合数据（**注意力的固定
-  位置编码绑定 65²，129² 需重新 patch**——同时验证跨位形推广与分辨率迁移）、
-  全量 N=2000（注意力小样本风险；POD 结构诊断复核）、3-seed 平均确认
-  0.635 vs 0.715 显著性、flash 注意力构建降 exp311 训练成本（80→~15 min
-  量级）、exp308 修复（FF 输入小缩放/ff_l 减小/SIREN，已知不兼容机制）、
-  两级 32²+17² 分层注意力变体（token 粒度更细）、POD p 模态扫描（p=50/100
-  折中）或 POD+学习 trunk 混合（系数 + 残差双通道）、FNOKAN 降 grid 或改
-  稀疏基函数测成本-精度曲线（当前 4× 时长无收益，除非数据/位形复杂度上升）。
+  特征（exp308）已排除；**POD 低秩基独立方案（exp312）已排除、但"POD 基 +
+  残差通道"混合已走通**（exp313 FNO 残差 0.883% = FNO 的 90% @ 0.21× 参数；
+  exp314 UNet 残差消融 1.099%——基外细节部分需要全局混合，谱残差为最优
+  残差架构）。后续方向：最优配置（exp311 优先）换 data_v6_clean 五配置/
+  混合数据（**注意力的固定位置编码绑定 65²，129² 需重新 patch**——同时
+  验证跨位形推广与分辨率迁移）、全量 N=2000（注意力小样本风险；POD 结构
+  诊断复核）、3-seed 平均确认 0.635 vs 0.715 显著性、flash 注意力构建降
+  exp311 训练成本（80→~15 min 量级）、exp308 修复（FF 输入小缩放/ff_l
+  减小/SIREN，已知不兼容机制）、两级 32²+17² 分层注意力变体（token 粒度
+  更细）、exp313 变体扫描（残差通道换 attention 测残差上限、POD p 模态
+  扫描 p=50/100 看残差任务如何变轻、pretrain 长度扫描、残差与 POD 全时段
+  可学 + 分工损失项替代时间冻结）、FNOKAN 降 grid 或改稀疏基函数测成本-
+  精度曲线（当前 4× 时长无收益，除非数据/位形复杂度上升）。
 - **延迟/部署**：复现阶段已证 GPU 前向 1.6 ms（665× vs freegs）；UFNO
   （参数 0.59×）延迟同档或更好，直接沿用。
 
@@ -369,6 +404,8 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 | exp307/308_pino_*_n500/ | **DeepONet 调优**：exp307 加宽（256→384，0.7575%、Ip −45% 反超 UFNO、J −0.48pp）/ exp308 加宽 + trunk 傅里叶特征（**失败**：阶段2 物理项梯度风暴，README 含三证据链崩溃归因）；README + figures/ + train/eval.log |
 | exp301–304_pino_*_n500/ | **骨架对比**：exp301 UNet（2.202% 失败，纯局部卷积）/ exp302 UFNO（0.729% 击败 FNO）/ exp303 FNO-KAN（0.857% 中性，机制成立增益零）/ exp304 PI-DeepONet（0.802% 容量奇迹，0.6M 参数）；README ×4 + figures/ + train/eval.log |
 | exp311/312_pino_*_n500/ | **第二轮架构**：exp311 TKNO-lite（**0.635% 系列新纪录**，全局注意力 ≥ 谱混合、全指标最佳）/ exp312 POD-DeepONet（1.508% 诚实负面，SVD 低秩基 p_psi=3/p_j=10 过度激进）；README ×2（POD 基能量诊断 + 注意力实现备注）+ figures/ + train/eval.log |
+| exp313_pod_residual_pino_twostage_n500/ | **exp312 落地修复**：POD 固定基 + 小 FNO 残差（0.883%，−41% vs POD；X 点反超 FNO；分阶段冻结协议）；README（双通道分工 + 冻结协议设计）+ figures/ + train/eval.log |
+| exp314_pod_residual_unet_pino_twostage_n500/ | **exp313 残差架构消融**：POD 固定基 + 纯卷积 UNet 残差（1.099%，−27% vs POD——基外细节部分需要全局混合；谱残差仍 +0.22pp）；README（科学问题 + 分层全局性讨论）+ figures/ + train/eval.log |
 
 ## 8. 可视化产物
 
@@ -400,7 +437,7 @@ exp008/009 是**位形泛化**实验：data_v5 换了机器（TestTokamak→MAST
 | exp106 | exp106_pino_twostage_v6clean_n500/figures_all\|dn\|sn\|snow_*\|limiter/ | 同 exp102 风格（fig1 含 J 行、fig2 含 Ip/J），六桶各一套；阶段2 自洽未建立（GS 残差 550×）在 fig2 GS 直方图可见 |
 | exp201 | exp201_pino_rhs_mix_gspack2_n500/figures_all\|dn\|sn/ | 同 exp103 风格三桶各一套（data_gspack2_v1）；另有 eval_x_v5all/（g2 模型交叉评估 v5 test，诊断用） |
 | exp202 | exp202_pino_twostage_mix_gspack2_n500/figures_all\|dn\|sn/ | 同 exp104 风格（fig1 含 J 行、fig2 含 Ip/J）三桶各一套（data_gspack2_v1）；另有 eval_x_v5all/（交叉评估） |
-| exp301–312 | exp3xx_pino_*_n500/figures/ | 同 exp102 风格（fig1 含 J 行、fig2 含 Ip/J 直方图）每实验一套；exp311/312 位于 exp311_tkno_lite_pino_twostage_n500/figures/、exp312_pod_deeponet_pino_twostage_n500/figures/ |
+| exp301–314 | exp3xx_pino_*_n500/figures/ | 同 exp102 风格（fig1 含 J 行、fig2 含 Ip/J 直方图）每实验一套；exp311–314 位于 exp311_tkno_lite_pino_twostage_n500/figures/、exp312_pod_deeponet_pino_twostage_n500/figures/、exp313_pod_residual_pino_twostage_n500/figures/、exp314_pod_residual_unet_pino_twostage_n500/figures/ |
 
 示例（v4 三模型，test 494）：A' best #337 0.136% / worst #124 3.17%；
 B best #39 0.147% / worst #411 3.44%；A best #22 0.444% / worst #126 13.45%。

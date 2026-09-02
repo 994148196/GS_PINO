@@ -64,7 +64,9 @@ def load_checkpoint(path: str):
     model_name = ckpt.get("model", "fno2d2608")
     kwargs = dict(in_channels=2 + len(stats["scalar_mean"]),
                   out_channels=out_channels)
-    if model_name == "pod_deeponet":     # exp312: fixed POD trunk basis
+    if model_name in ("pod_deeponet", "pod_residual", "pod_residual_unet"):
+        # exp312 fixed POD trunk basis / exp313-314 POD channel (same pod_basis
+        # dict, computed by train_pino from the N train subset)
         kwargs["pod_basis"] = ckpt["pod_basis"]
     model = build_model(model_name, **kwargs)
     model.load_state_dict(ckpt["model_state"])

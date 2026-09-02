@@ -36,6 +36,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from gs_pino_dn_fno_2608.model_dn_fno import (
+    FNO2d2608,
     FNOBlock,
     SpectralConv2dR,
     build_model as _build_fno2d2608,
@@ -634,6 +635,120 @@ def _build_pod_deeponet(**overrides) -> PODDeepONet2d:
 
 
 # ---------------------------------------------------------------------------
+# exp313 — POD residual: fixed POD-basis channel + small FNO residual channel
+# ---------------------------------------------------------------------------
+
+class PODResidual2d2608(nn.Module):
+    """Two-channel operator (exp313): the exp312 POD-DeepONet channel (fixed
+    low-rank basis, branch predicts coefficients) PLUS a small FNO residual
+    channel that learns the subspace-outer detail:
+
+        psi = psi0 + branch(x) @ phi_psi   [frozen after pretrain]
+            + fno_small(x)                 [learned]
+
+    Rationale (exp312 diagnosis): the 99.92%-energy 3-mode basis caps accuracy
+    at ~1.5% because the truncated 0.08% is X-point-scale structure; a learned
+    residual channel should recover it while the POD channel keeps the bulk
+    shape (fast, stable, interpretable). Training protocol (train_pino.py
+    --pod-pretrain-epochs): epochs 1..N train the branch only (residual
+    frozen); then the branch is frozen and the residual learns y - psi_pod —
+    a clean split of labor with no channel competition. The residual proj is
+    scaled x0.1 at init (exp304 trunk convention) so the network starts near
+    zero. count_params() reports the currently-unfrozen parameter count (it
+    drops once the branch is frozen)."""
+
+    def __init__(self, in_channels: int = 18, out_channels: int = 2,
+                 pod_basis: dict | None = None, hidden: int = 256,
+                 layers: int = 3, residual_arch: str = "fno",
+                 residual_width: int = 32, residual_modes: int = 12,
+                 residual_layers: int = 4, residual_base: int = 16,
+                 residual_depth: int = 4):
+        super().__init__()
+        assert pod_basis is not None, "pod_residual requires pod_basis"
+        self.in_channels, self.out_channels = in_channels, out_channels
+        self.p_psi = int(pod_basis["p_psi"])
+        self.p_j = int(pod_basis.get("p_j", 0))
+        for key in ("psi0", "phi_psi"):
+            self.register_buffer(key, torch.from_numpy(
+                np.ascontiguousarray(pod_basis[key])).float())
+        if out_channels > 1 and self.p_j > 0:
+            for key in ("j0", "phi_j"):
+                self.register_buffer(key, torch.from_numpy(
+                    np.ascontiguousarray(pod_basis[key])).float())
+        branch_in = in_channels - 2
+        self.branch_psi = _MLP(branch_in, hidden, layers, self.p_psi)
+        self.branch_j = (_MLP(branch_in, hidden, layers, self.p_j)
+                         if out_channels > 1 and self.p_j > 0 else None)
+        # residual channel: exp313 "fno" = small spectral FNO; exp314 "unet" =
+        # slim plain U-Net (pure local conv, same depth as exp301 but narrower)
+        if residual_arch == "fno":
+            self.residual = FNO2d2608(in_channels=in_channels,
+                                      out_channels=out_channels,
+                                      width=residual_width, modes1=residual_modes,
+                                      modes2=residual_modes, layers=residual_layers)
+        elif residual_arch == "unet":
+            self.residual = UNet2d2608(in_channels=in_channels,
+                                       out_channels=out_channels,
+                                       base_width=residual_base,
+                                       depth=residual_depth)
+        else:
+            raise ValueError(f"pod_residual: unknown residual_arch {residual_arch!r}")
+        with torch.no_grad():                       # small-start residual
+            self.residual.proj.weight.mul_(0.1)
+            self.residual.proj.bias.mul_(0.1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch = x.shape[0]
+        br_in = x[:, 2:].mean(dim=(2, 3))                    # (B, branch_in)
+        psi = self.psi0 + self.branch_psi(br_in) @ self.phi_psi
+        out = [psi]
+        if self.branch_j is not None:
+            j = self.j0 + self.branch_j(br_in) @ self.phi_j
+            out.append(j)
+        h = w = int(round(psi.shape[1] ** 0.5))
+        pod = torch.stack(out, dim=1).reshape(batch, len(out), h, w)
+        return pod + self.residual(x)
+
+    def set_branch_frozen(self, frozen: bool) -> None:
+        """Freeze/unfreeze the POD branch (coefficient) parameters."""
+        for p in self.branch_psi.parameters():
+            p.requires_grad = not frozen
+        if self.branch_j is not None:
+            for p in self.branch_j.parameters():
+                p.requires_grad = not frozen
+
+    def set_residual_frozen(self, frozen: bool) -> None:
+        """Freeze/unfreeze the residual FNO parameters."""
+        for p in self.residual.parameters():
+            p.requires_grad = not frozen
+
+    def count_params(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+def _build_pod_residual(**overrides) -> PODResidual2d2608:
+    kwargs = dict(in_channels=18, out_channels=2, hidden=256, layers=3,
+                  residual_width=32, residual_modes=12, residual_layers=4,
+                  pod_basis=None)
+    kwargs.update(overrides)
+    return PODResidual2d2608(**kwargs)
+
+
+def _build_pod_residual_unet(**overrides) -> PODResidual2d2608:
+    """exp314: same POD + residual frame as exp313, but the residual channel
+    is a slim plain U-Net (pure local convolution) instead of the small FNO —
+    tests whether the POD-basis-outer detail needs global mixing (exp301 says
+    the full task does: 2.2% with local receptive fields) or is locally
+    expressible on top of the fixed low-rank basis. base 16 / depth 4 keeps
+    the ~0.8M budget on par with the exp313 residual FNO (594K)."""
+    kwargs = dict(in_channels=18, out_channels=2, hidden=256, layers=3,
+                  residual_arch="unet", residual_base=16, residual_depth=4,
+                  pod_basis=None)
+    kwargs.update(overrides)
+    return PODResidual2d2608(**kwargs)
+
+
+# ---------------------------------------------------------------------------
 # registry / dispatcher (the only API train_pino / evaluate_pino need)
 # ---------------------------------------------------------------------------
 
@@ -653,6 +768,11 @@ MODEL_REGISTRY = {
     # computes it from the train subset; evaluate reads it from best.pt)
     "tkno_lite": _build_tkno_lite,
     "pod_deeponet": _build_pod_deeponet,
+    # exp313: POD fixed basis + small FNO residual (pod_basis like pod_deeponet;
+    # train uses --pod-pretrain-epochs for the freeze protocol)
+    "pod_residual": _build_pod_residual,
+    # exp314: same frame, residual channel = slim plain U-Net (pure local conv)
+    "pod_residual_unet": _build_pod_residual_unet,
 }
 
 
@@ -665,7 +785,7 @@ if __name__ == "__main__":
     rng = np.random.default_rng(0)
     for name in MODEL_REGISTRY:
         kw = dict(in_channels=18, out_channels=2)
-        if name == "pod_deeponet":
+        if name in ("pod_deeponet", "pod_residual", "pod_residual_unet"):
             # synthetic basis just for the shape check (the real basis comes
             # from the train data / checkpoint)
             kw["pod_basis"] = {

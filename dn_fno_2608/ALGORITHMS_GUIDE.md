@@ -514,16 +514,32 @@ O 点 0.65 cm（+0.45），J 2.52%，Ip 0.253%（物理约束在低秩空间仍�
 **什么时候 POD 反而有用（文献视角）**：POD-DeepONet（Lu et al. 2022）原
 论文的卖点是**噪声鲁棒性**——固定基 = 强正则化，含噪数据下线性基天然
 滤噪。本实验是干净数据 + 高精度要求，正则化变成瓶颈。未来若遇高噪声
-数据（实验测量），POD 基可能反超；折中路线：p 模态扫描（p=50/100）或
-"POD 基 + 学习残差 trunk"双通道（基管大体形状，网络补 X 点细节）。
+数据（实验测量），POD 基可能反超。
+
+**"POD 基 + 学习残差"双通道已在 exp313 落地**：本节的诊断（基管大体
+形状、网络补 X 点细节）正是 exp313 的设计蓝本——低秩 POD 通道原样保留，
+并联小 FNO 残差学 `y − ψ_pod`（分阶段冻结协议先 branch 后残差，消除通道
+竞争）：**1.508% → 0.883%（−41%）**，X 点 0.85 → 0.54/0.56 cm、O 点
+0.65 → 0.34 cm、GS 残差 −73%——被截断的 0.08% 能量确实是 X 点尺度结构，
+且谱卷积残差能把它学回来。870K 参数（FNO 的 0.21×）达到 FNO 的 ~90%
+精度（median 持平 0.645 vs 0.642，X 点反超）；代价是 Ip 略退化
+（0.253% → 0.338%：残差放大 J 自由度，分布更准但积分匹配略松）。详见
+[exp313 README](experiments/exp313_pod_residual_pino_twostage_n500/README.md)。
+
+**残差通道需要多少全局性？**（exp314 消融，残差换成纯卷积 UNet）——
+POD 基承担全局形状后，基外细节**部分**需要全局混合：纯卷积残差把 POD
+从 1.508% 拉到 1.099%（−27%：X 点 −25%、O 点 −44%、GS 残差 −62%），但
+明显弱于 FNO 残差（+0.22pp）——完整任务下纯卷积 = FNO 的 2.75× 差距，
+残差任务下缩小到 ~1.25×，谱混合仍提供 X 点 −0.1 cm 级别的边际增益。
+详见 [exp314 README](experiments/exp314_pod_residual_unet_pino_twostage_n500/README.md)。
 
 **位置与参考**
 
 | 项 | 位置 |
 |---|---|
-| 源码 | [models_alt.py:550](../src/gs_pino_fno_phys/models_alt.py#L550) `pod_basis_from_snapshots`（SVD + 能量判据）；`PODDeepONet2d` :581、构造器 :629；训练侧基计算 `pod_basis_from_dataset`（[train_pino.py:55](../src/gs_pino_fno_phys/train_pino.py#L55)，注意基必须来自嵌套子集 `ds.indices`） |
-| 实验 | [exp312_pod_deeponet_pino_twostage_n500/](experiments/exp312_pod_deeponet_pino_twostage_n500/README.md)（1.508% 诚实负面 + 能量诊断） |
-| 脚本 | [run_exp311_312_pino.sh](scripts/run_exp311_312_pino.sh) |
+| 源码 | [models_alt.py:550](../src/gs_pino_fno_phys/models_alt.py#L550) `pod_basis_from_snapshots`（SVD + 能量判据）；`PODDeepONet2d` :581、构造器 :629；exp313 `PODResidual2d2608` :641（POD 通道 + FNO 残差 + 冻结接口 `set_branch_frozen`/`set_residual_frozen`）；训练侧基计算 `pod_basis_from_dataset`（[train_pino.py:55](../src/gs_pino_fno_phys/train_pino.py#L55)，注意基必须来自嵌套子集 `ds.indices`）；冻结协议 `--pod-pretrain-epochs`（[train_pino.py:151](../src/gs_pino_fno_phys/train_pino.py#L151)，交接 :290、阶段1 挂起 :299） |
+| 实验 | [exp312_pod_deeponet_pino_twostage_n500/](experiments/exp312_pod_deeponet_pino_twostage_n500/README.md)（1.508% 诚实负面 + 能量诊断）；[exp313_pod_residual_pino_twostage_n500/](experiments/exp313_pod_residual_pino_twostage_n500/README.md)（0.883%，双通道分工 + 冻结协议）；[exp314_pod_residual_unet_pino_twostage_n500/](experiments/exp314_pod_residual_unet_pino_twostage_n500/README.md)（1.099%，UNet 残差消融——基外细节部分需要全局混合） |
+| 脚本 | [run_exp311_312_pino.sh](scripts/run_exp311_312_pino.sh)（exp312）；[run_exp313_pino.sh](scripts/run_exp313_pino.sh)（exp313）；[run_exp314_pino.sh](scripts/run_exp314_pino.sh)（exp314，均 `--pod-pretrain-epochs 60`） |
 | 参考 | Lu et al., "A comprehensive and fair comparison of two neural operators…", 2022（arXiv:2304.00643，POD-DeepONet） |
 
 ### 4.7 Transformer 算子（TKNO-lite，exp311，系列最优）
@@ -754,6 +770,8 @@ for epoch in 1..800:
 |---|---|---|---|---|---|
 | exp301 | U-Net | 2.202% | 3.86% | 0.587% | 1.83/2.32 |
 | exp312 | POD-DeepONet | 1.508% | 2.52% | 0.253% | 0.85/0.85 |
+| exp314 | POD 基 + UNet 残差 | 1.099% | 2.33% | 0.403% | 0.64/0.64 |
+| exp313 | POD 基 + 小 FNO 残差 | 0.883% | 1.76% | 0.338% | 0.54/0.56 |
 | exp102 | FNO | 0.800% | 1.36% | 0.21% | — |
 | exp304 | PI-DeepONet | 0.802% | 2.61% | 0.384% | 0.73/0.70 |
 | exp303 | FNO-KAN | 0.857% | 1.45% | 0.238% | 0.67/0.71 |
@@ -782,8 +800,15 @@ for epoch in 1..800:
    别为 KAN 付 4× 训练时间。
 5. **分支-主干分解是最经济的局部解**（exp304/307）：0.6M 参数追平 4.2M
    FNO，加宽到 1.34M 反超（0.7575%）；J/Ip 短板是容量分配问题，加宽即愈。
-6. **低秩先验过度激进**（exp312）：p_psi=3（99.92% 能量）封顶 1.5%；
-   能量判据 ≠ 精度判据；p_psi=3 是数据集结构诊断（v5/dn 解空间极低秩）。
+6. **低秩先验单独封顶，但可修复**（exp312 → exp313/314）：p_psi=3（99.92%
+   能量）封顶 1.5%；能量判据 ≠ 精度判据；p_psi=3 是数据集结构诊断（v5/dn
+   解空间极低秩）。**并联残差通道直接修复**：小 FNO 残差（exp313）1.508%
+   → 0.883%（−41%）、X 点 0.85 → 0.54/0.56 cm、O 点 0.65 → 0.34 cm——被
+   截断的 0.08% 能量确实是 X 点尺度结构；870K 参数（FNO 的 0.21×）达 FNO
+   ~90% 精度。**残差架构消融（exp314）**：纯卷积 UNet 残差 1.099%（−27%，
+   弱 0.22pp）——基外细节"部分需要"全局混合（完整任务 2.75× → 残差任务
+   1.25× 差距），谱混合仍是最优残差。分工靠分阶段冻结协议（先 branch 60
+   epochs 后残差），消除双通道竞争。
 7. **物理损失的价值**（exp101/102 系列）：自洽 + Ip 约束是纯监督给不了
    的；物理权重必须 warm-up（λ 从 0 线性爬升 30 epochs），否则阶段2 首
    epoch 爆炸。
@@ -794,7 +819,7 @@ for epoch in 1..800:
 |---|---|---|
 | 损失权重加大 | exp306 | 杠杆已吃满，加大负收益 |
 | trunk 傅里叶特征 | exp308 | 高频注入被二阶差分放大，梯度风暴（机制性不兼容） |
-| POD 低秩基 | exp312 | 3 模态封顶 1.5%，线性子空间装不下 X 点细节 |
+| POD 低秩基（独立） | exp312 | 3 模态封顶 1.5%，线性子空间装不下 X 点细节；**混合路线可行**（exp313：并联 FNO 残差 → 0.883%） |
 | 点式 KAN | kan 轨 | 1.3k 参数 + 无全局混合，20.87% |
 | FNO-KAN | exp303 | 机制成立、增益零、4× 时间 |
 

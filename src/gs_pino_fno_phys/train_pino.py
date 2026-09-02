@@ -148,6 +148,12 @@ def main() -> None:
                          "psi<->J self-consistency is not yet learned)")
     ap.add_argument("--pde-mask-erode", type=int, default=0,
                     help="erode the PDE mask by k cells (boundary-noise mitigation)")
+    ap.add_argument("--pod-pretrain-epochs", type=int, default=0,
+                    help="exp313 pod_residual only: epochs 1..N train the POD "
+                         "branch only (residual frozen); then the branch is "
+                         "frozen and the residual learns y - psi_pod (clean "
+                         "split of labor, no channel competition). Stage-1 "
+                         "switch is suspended until the pretrain is over")
     args = ap.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -171,7 +177,7 @@ def main() -> None:
     model_kwargs = dict(in_channels=2 + len(stats["scalar_mean"]),
                         out_channels=out_channels)
     pod_basis = None
-    if args.model == "pod_deeponet":
+    if args.model in ("pod_deeponet", "pod_residual", "pod_residual_unet"):
         pod_basis = pod_basis_from_dataset(train_ds)  # fixed trunk basis
         model_kwargs["pod_basis"] = pod_basis
     model = build_model(args.model, **model_kwargs).to(device)
@@ -194,7 +200,7 @@ def main() -> None:
     print(f"  input channels: {2 + len(stats['scalar_mean'])} | output: {out_channels}")
     print(f"  model params: {n_params} | w_pde={w_pde} w_ip={w_ip} w_j={w_j} "
           f"(pde_scale={pde_scale:.3f}, ip_scale={ip_scale:.3g})")
-    if args.model == "pod_deeponet":
+    if args.model in ("pod_deeponet", "pod_residual", "pod_residual_unet"):
         print(f"  POD basis: p_psi={pod_basis['p_psi']} "
               f"(energy {pod_basis['energy_psi']*100:.3f}%) "
               f"p_j={pod_basis.get('p_j', 0)} "
@@ -204,6 +210,14 @@ def main() -> None:
         print(f"  stage-1 -> stage-2: val rel L2 < {args.stage1_threshold*100:.2f}% "
               f"or epoch >= {args.stage1_max_epochs} "
               f"(physics weights warm up over {args.stage2_ramp_epochs} epochs)")
+    pod_pretrain = args.model in ("pod_residual", "pod_residual_unet") \
+        and args.pod_pretrain_epochs > 0
+    if pod_pretrain:
+        model.set_residual_frozen(True)
+        print(f"  pod-pretrain protocol (exp313): epochs 1..{args.pod_pretrain_epochs} "
+              f"train the POD branch only (residual FNO frozen, starts ~0); then "
+              f"branch frozen, residual learns y - psi_pod; stage-1 switch "
+              f"suspended until pretrain is over")
     print(f"  train: {len(train_ds)} | val: {len(val_ds)} | out: {out_dir}")
     print(f"{'='*70}\n")
 
@@ -273,9 +287,19 @@ def main() -> None:
         scheduler.step(val_l2)
         lr = optimizer.param_groups[0]["lr"]
 
-        # ---- stage switch (twostage, stage 1 only) ----
+        # ---- pod-pretrain handover (exp313): branch -> residual ----
+        if pod_pretrain and epoch == args.pod_pretrain_epochs + 1:
+            model.set_residual_frozen(False)
+            model.set_branch_frozen(True)
+            print(f"  >> POD pretrain done at epoch {epoch}: branch FROZEN, "
+                  f"residual FNO unfrozen (learns y - psi_pod)")
+
+        # ---- stage switch (twostage, stage 1 only; suspended during
+        #      pod-pretrain so the residual gets a fixed POD anchor) ----
         if args.mode == "twostage" and switch_epoch is None:
-            if val_l2 < args.stage1_threshold or epoch >= args.stage1_max_epochs:
+            pretrain_ok = not (pod_pretrain and epoch <= args.pod_pretrain_epochs)
+            if pretrain_ok and (val_l2 < args.stage1_threshold
+                                or epoch >= args.stage1_max_epochs):
                 switch_epoch = epoch
                 stale = 0
                 print(f"  >> STAGE 2 begins at epoch {epoch} "
