@@ -31,7 +31,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from gs_pino_dn_fno_2608.data_dn_fno import nested_train_indices, rel_l2_normalized
-from gs_pino_fno_phys.models_alt import MODEL_REGISTRY, build_model
+from gs_pino_fno_phys.models_alt import MODEL_REGISTRY, build_model, pod_basis_from_snapshots
 from gs_pino_fno_phys.data_pino import DNPinoDataset
 from gs_pino_fno_phys.losses_pino import (
     denorm_j,
@@ -50,6 +50,24 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def pod_basis_from_dataset(ds: DNPinoDataset, energy: float = 0.999,
+                           max_modes: int = 256) -> dict:
+    """POD basis of the z-domain training outputs (exp312 pod_deeponet): the
+    snapshots are the same z-scored psi_plasma / J the network is trained on
+    (data_pino z-scoring), taken from the nested N train subset the model will
+    learn — basis and targets share the training pool."""
+    npix = ds.psi_plasma.shape[1] * ds.psi_plasma.shape[2]
+    # ds arrays hold the FULL pool; the basis must come from the same nested
+    # train subset the model learns (ds.indices)
+    idx = np.asarray(ds.indices, dtype=np.int64)
+    psi_z = ((ds.psi_plasma[idx] - ds.psi_plasma_mean) / ds.psi_plasma_std) \
+        .reshape(len(idx), npix)
+    j_z = ((ds.j_phys[idx] - ds.j_mean) / ds.j_std).reshape(len(idx), npix)
+    return pod_basis_from_snapshots(np.ascontiguousarray(psi_z),
+                                    np.ascontiguousarray(j_z),
+                                    energy=energy, max_modes=max_modes)
 
 
 def erode_mask(mask: torch.Tensor, k: int) -> torch.Tensor:
@@ -150,8 +168,13 @@ def main() -> None:
 
     # ---- model (psi_plasma 1ch / psi_plasma+J 2ch) / optimizer / scheduler ----
     out_channels = 2 if args.mode == "twostage" else 1
-    model = build_model(args.model, in_channels=2 + len(stats["scalar_mean"]),
-                        out_channels=out_channels).to(device)
+    model_kwargs = dict(in_channels=2 + len(stats["scalar_mean"]),
+                        out_channels=out_channels)
+    pod_basis = None
+    if args.model == "pod_deeponet":
+        pod_basis = pod_basis_from_dataset(train_ds)  # fixed trunk basis
+        model_kwargs["pod_basis"] = pod_basis
+    model = build_model(args.model, **model_kwargs).to(device)
     n_params = model.count_params()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.weight_decay)
@@ -171,6 +194,12 @@ def main() -> None:
     print(f"  input channels: {2 + len(stats['scalar_mean'])} | output: {out_channels}")
     print(f"  model params: {n_params} | w_pde={w_pde} w_ip={w_ip} w_j={w_j} "
           f"(pde_scale={pde_scale:.3f}, ip_scale={ip_scale:.3g})")
+    if args.model == "pod_deeponet":
+        print(f"  POD basis: p_psi={pod_basis['p_psi']} "
+              f"(energy {pod_basis['energy_psi']*100:.3f}%) "
+              f"p_j={pod_basis.get('p_j', 0)} "
+              f"(energy {pod_basis.get('energy_j', 0)*100:.3f}%) "
+              f"| n_train={pod_basis['n_train']}")
     if args.mode == "twostage":
         print(f"  stage-1 -> stage-2: val rel L2 < {args.stage1_threshold*100:.2f}% "
               f"or epoch >= {args.stage1_max_epochs} "
@@ -309,6 +338,7 @@ def main() -> None:
         "n_train": args.n_train,
         "seed": args.seed,
         "stats": stats,
+        "pod_basis": pod_basis,     # exp312: fixed POD trunk basis (None for others)
         "args": vars(args),
     }, out_dir / "best.pt")
     with open(out_dir / "history.json", "w") as f:

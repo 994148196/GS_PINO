@@ -61,9 +61,12 @@ def load_checkpoint(path: str):
     out_channels = 2 if mode == "twostage" else 1
     # exp3xx checkpoints record the backbone; exp101-203 have no "model" key
     # -> default fno2d2608 (backward compatible)
-    model = build_model(ckpt.get("model", "fno2d2608"),
-                        in_channels=2 + len(stats["scalar_mean"]),
-                        out_channels=out_channels)
+    model_name = ckpt.get("model", "fno2d2608")
+    kwargs = dict(in_channels=2 + len(stats["scalar_mean"]),
+                  out_channels=out_channels)
+    if model_name == "pod_deeponet":     # exp312: fixed POD trunk basis
+        kwargs["pod_basis"] = ckpt["pod_basis"]
+    model = build_model(model_name, **kwargs)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     return model, stats, mode, ckpt

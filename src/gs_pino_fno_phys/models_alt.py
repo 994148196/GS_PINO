@@ -461,6 +461,179 @@ def _build_pideeponet2d_ff(**overrides) -> PIDeepONet2d:
 
 
 # ---------------------------------------------------------------------------
+# exp311 — TKNO-lite: conv-stem transformer operator (TKNO minus KAN)
+# ---------------------------------------------------------------------------
+
+class _TransformerBlock(nn.Module):
+    """Pre-LN transformer block: LayerNorm -> global self-attention (residual)
+    -> LayerNorm -> MLP(GELU, 4x) (residual). No dropout — parity with the
+    no-regularization FNO baseline of the series."""
+
+    def __init__(self, d: int, heads: int, mlp_ratio: float = 4.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(d)
+        self.attn = nn.MultiheadAttention(d, heads, batch_first=True)
+        self.norm2 = nn.LayerNorm(d)
+        self.mlp = nn.Sequential(
+            nn.Linear(d, int(d * mlp_ratio)), nn.GELU(),
+            nn.Linear(int(d * mlp_ratio), d))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.norm1(x)
+        # need_weights=False -> nn.MultiheadAttention takes the fused SDPA
+        # (flash / mem-efficient) fast path; the default need_weights=True
+        # forces the slow math path that materializes the attention matrix
+        x = x + self.attn(h, h, h, need_weights=False)[0]
+        h = self.norm2(x)
+        return x + self.mlp(h)
+
+
+class TKNOlite2d2608(nn.Module):
+    """Transformer operator for the GS problem (exp311): the TKNO of
+    arXiv:2511.19114 (Transformer-KAN Neural Operator, ICML 2026 — the same
+    Grad-Shafranov operator-learning task) stripped of its KAN pointwise path
+    (exp303 showed per-pixel KAN gain ~0 on this data) and adapted to the
+    65x65 grid.
+
+    Global elliptic coupling is carried by self-attention instead of spectral
+    convs (UFNO) or plain depth (UNet): a conv stem keeps the full 65^2 detail
+    path, a 3x3/stride-2 patch embedding downsamples to 33^2 = 1089 tokens
+    (4225 tokens would be quadratic-infeasible at batch 16), L blocks of global
+    self-attention mix tokens, and the decoder up-samples back with a stem
+    skip. Learned 2D positional embedding (the MAST 65x65 grid is fixed).
+    """
+
+    def __init__(self, in_channels: int = 18, out_channels: int = 2,
+                 width: int = 128, heads: int = 8, layers: int = 4,
+                 stem_channels: int = 64):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, stem_channels, 3, padding=1), nn.GELU())
+        # 65x65 -> 32x32 = 1024 tokens (k=4 s=2 p=1: (65+2-4)/2+1 = 32). The
+        # 1024 count is a multiple of 8, so fused flash attention applies
+        # (33^2=1089 falls back to the slow mem-efficient path)
+        self.patch_embed = nn.Conv2d(stem_channels, width, 4, stride=2, padding=1)
+        self.pos_embed = nn.Parameter(torch.zeros(1, width, 32, 32))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        self.blocks = nn.ModuleList(
+            [_TransformerBlock(width, heads) for _ in range(layers)])
+        self.dec = _DoubleConv(stem_channels + width, stem_channels)
+        self.proj = nn.Conv2d(stem_channels, out_channels, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        stem = self.stem(x)                                # (B, 64, 65, 65)
+        t = self.patch_embed(stem) + self.pos_embed        # (B, W, 32, 32)
+        b, c, h, w = t.shape
+        t = t.flatten(2).transpose(1, 2)                   # (B, 1024, W)
+        for blk in self.blocks:
+            t = blk(t)
+        t = t.transpose(1, 2).reshape(b, c, h, w)          # (B, W, 32, 32)
+        up = F.interpolate(t, size=stem.shape[-2:], mode="bilinear",
+                           align_corners=False)
+        return self.proj(self.dec(torch.cat([up, stem], dim=1)))
+
+    def count_params(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+def _build_tkno_lite(**overrides) -> TKNOlite2d2608:
+    kwargs = dict(in_channels=18, out_channels=2, width=128, heads=8,
+                  layers=4, stem_channels=64)
+    kwargs.update(overrides)
+    return TKNOlite2d2608(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# exp312 — POD-DeepONet: data-derived low-rank basis instead of a learned trunk
+# ---------------------------------------------------------------------------
+
+def pod_basis_from_snapshots(psi_snap: np.ndarray, j_snap: np.ndarray | None,
+                             energy: float = 0.999, max_modes: int = 256):
+    """Top-p POD basis of the centered z-domain training outputs (SVD of the
+    N x npix snapshot matrix per channel). Returns a dict for PODDeepONet2d:
+
+        psi0 / j0      mean field (npix,)
+        phi_psi / phi_j  right singular vectors (p, npix)  (Vt[:p] rows)
+        p_psi / p_j    retained mode counts
+        energy_psi / energy_j  cumulative retained energy at p
+
+    p = smallest count reaching `energy` (capped at max_modes)."""
+    def _svd(X: np.ndarray, label: str) -> dict:
+        mean = X.mean(axis=0)
+        U, S, Vt = np.linalg.svd(X - mean, full_matrices=False)
+        cum = np.cumsum(S ** 2) / np.sum(S ** 2)
+        p = min(int(np.searchsorted(cum, energy)) + 1, max_modes, len(S))
+        print(f"  POD[{label}]: n={len(X)} -> {p} modes "
+              f"(energy {cum[p-1]*100:.4f}%, cap {max_modes})")
+        return {"mean": mean, "modes": Vt[:p].copy(), "p": p,
+                "energy": float(cum[p - 1])}
+    out = {"n_train": len(psi_snap), "energy": energy, "max_modes": max_modes}
+    a = _svd(psi_snap.reshape(len(psi_snap), -1).astype(np.float64), "psi")
+    out.update({"psi0": a["mean"], "phi_psi": a["modes"], "p_psi": a["p"],
+                "energy_psi": a["energy"]})
+    if j_snap is not None:
+        b = _svd(j_snap.reshape(len(j_snap), -1).astype(np.float64), "j")
+        out.update({"j0": b["mean"], "phi_j": b["modes"], "p_j": b["p"],
+                    "energy_j": b["energy"]})
+    return out
+
+
+class PODDeepONet2d(nn.Module):
+    """DeepONet whose trunk is replaced by the data-derived POD basis (exp312):
+    psi_z(R,Z) = psi0(R,Z) + sum_k b_k phi_k(R,Z), where {phi_k} are the top-p
+    right singular vectors of the centered z-domain training outputs and the
+    branch MLP predicts the coefficients from the 16 z-scored scalars (the
+    same branch input as PIDeepONet2d). The basis is fixed (registered
+    buffers, no gradients), so physics fine-tuning (stage 2) can only move the
+    branch coefficients — the low-rank prior on the smooth elliptic solutions
+    is the hypothesis under test (POD-DeepONet, Lu et al. 2022).
+
+    pod_basis: dict from pod_basis_from_snapshots (or the one stored in a
+    checkpoint under the "pod_basis" key). Required at construction — the
+    buffer shapes cannot be known before the basis exists (train computes it
+    from the N=500 train subset; evaluate reads it from best.pt)."""
+    def __init__(self, in_channels: int = 18, out_channels: int = 2,
+                 hidden: int = 256, layers: int = 3, pod_basis: dict | None = None):
+        super().__init__()
+        assert pod_basis is not None, "pod_deeponet requires pod_basis"
+        self.in_channels, self.out_channels = in_channels, out_channels
+        self.p_psi = int(pod_basis["p_psi"])
+        self.p_j = int(pod_basis.get("p_j", 0))
+        for key in ("psi0", "phi_psi"):
+            self.register_buffer(key, torch.from_numpy(
+                np.ascontiguousarray(pod_basis[key])).float())
+        if out_channels > 1 and self.p_j > 0:
+            for key in ("j0", "phi_j"):
+                self.register_buffer(key, torch.from_numpy(
+                    np.ascontiguousarray(pod_basis[key])).float())
+        branch_in = in_channels - 2
+        self.branch_psi = _MLP(branch_in, hidden, layers, self.p_psi)
+        self.branch_j = (_MLP(branch_in, hidden, layers, self.p_j)
+                         if out_channels > 1 and self.p_j > 0 else None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch = x.shape[0]
+        br_in = x[:, 2:].mean(dim=(2, 3))                    # (B, branch_in)
+        psi = self.psi0 + self.branch_psi(br_in) @ self.phi_psi  # (B, npix)
+        out = [psi]
+        if self.branch_j is not None:
+            j = self.j0 + self.branch_j(br_in) @ self.phi_j
+            out.append(j)
+        h = w = int(round(psi.shape[1] ** 0.5))              # 65x65 fixed grid
+        return torch.stack(out, dim=1).reshape(batch, len(out), h, w)
+
+    def count_params(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+def _build_pod_deeponet(**overrides) -> PODDeepONet2d:
+    kwargs = dict(in_channels=18, out_channels=2, hidden=256, layers=3,
+                  pod_basis=None)
+    kwargs.update(overrides)
+    return PODDeepONet2d(**kwargs)
+
+
+# ---------------------------------------------------------------------------
 # registry / dispatcher (the only API train_pino / evaluate_pino need)
 # ---------------------------------------------------------------------------
 
@@ -475,6 +648,11 @@ MODEL_REGISTRY = {
     "ufno_tuned": _build_ufno2d2608_tuned,
     "deeponet_wide": _build_pideeponet2d_wide,
     "deeponet_ff": _build_pideeponet2d_ff,
+    # round-2 candidates (exp311/312): TKNO-lite (transformer operator) and
+    # POD-DeepONet (low-rank basis). pod_deeponet needs pod_basis (train
+    # computes it from the train subset; evaluate reads it from best.pt)
+    "tkno_lite": _build_tkno_lite,
+    "pod_deeponet": _build_pod_deeponet,
 }
 
 
@@ -484,8 +662,20 @@ def build_model(name: str = "fno2d2608", **overrides) -> nn.Module:
 
 
 if __name__ == "__main__":
+    rng = np.random.default_rng(0)
     for name in MODEL_REGISTRY:
-        m = build_model(name, in_channels=18, out_channels=2)
+        kw = dict(in_channels=18, out_channels=2)
+        if name == "pod_deeponet":
+            # synthetic basis just for the shape check (the real basis comes
+            # from the train data / checkpoint)
+            kw["pod_basis"] = {
+                "p_psi": 8, "p_j": 8,
+                "psi0": rng.normal(size=4225).astype(np.float32),
+                "phi_psi": rng.normal(size=(8, 4225)).astype(np.float32),
+                "j0": rng.normal(size=4225).astype(np.float32),
+                "phi_j": rng.normal(size=(8, 4225)).astype(np.float32),
+            }
+        m = build_model(name, **kw)
         n = m.count_params()
         x = torch.randn(2, 18, 65, 65)
         with torch.no_grad():
@@ -493,6 +683,20 @@ if __name__ == "__main__":
         assert y.shape == (2, 2, 65, 65), f"{name}: {tuple(y.shape)}"
         assert torch.isfinite(y).all(), f"{name}: non-finite output"
         print(f"{name}: {n} params | {tuple(x.shape)} -> {tuple(y.shape)} OK")
+
+    # POD SVD self-check: snapshots from a known low-rank field must be
+    # recovered by the basis up to the retained-energy error
+    rng = np.random.default_rng(1)
+    modes = rng.normal(size=(6, 4225))
+    coeffs = rng.normal(size=(64, 6)) * 10.0
+    psi = coeffs @ modes + 0.01 * rng.normal(size=(64, 4225))
+    basis = pod_basis_from_snapshots(psi, None, energy=0.9999, max_modes=16)
+    centered = psi[:8] - psi.mean(0)
+    proj = centered @ basis["phi_psi"].T @ basis["phi_psi"]  # onto retained modes
+    err = np.abs(centered - proj).max()
+    print(f"POD SVD self-check: {basis['p_psi']} modes, "
+          f"max projection err {err:.2e}")
+    assert err < 0.1  # residual = the dropped additive noise (0.01 std)
 
     # spline-basis cross-check: batched recursion vs the per-index Cox-de Boor
     # table (_bspline_bases), including the [-1,1] boundary points

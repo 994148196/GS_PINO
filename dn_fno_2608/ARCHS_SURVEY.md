@@ -72,3 +72,50 @@
 | exp303 优于 0.80% | 变系数适配论点成立（KANO 论点在 GS 上复现） |
 | exp304 明显差于 0.80% | 容量或全局耦合不足；0.60M 参数是解释变量 |
 | 所有骨架 ≈ 0.8–1.2% | 数据侧误差下限主导（exp201/202 的 g2 经验：同数据不同做法下限一致） |
+
+## 5. 第二轮调研（2026-09-01，exp301–308 完成后）
+
+> 第一轮候选已全部实测（§4 表结果见实验台账）：UFNO 0.729% 胜出、UNet 2.202%
+> 失败、FNO-KAN 中性、DeepONet 0.802%（加宽 0.7575%）、FF trunk 阶段2 崩溃。
+
+### 5.0 系列实证 → 候选过滤准则
+
+| 实证 | 来源 | 对候选架构的过滤含义 |
+|---|---|---|
+| 多尺度谱 = 本数据胜出归纳偏置 | exp302/305（0.729%/0.7147%） | 新候选应保留全局混合 + 多尺度；纯局部卷积已排除（exp301） |
+| 逐点固定高频注入 + FD 物理项 = 崩溃 | exp308 | 高频路径必须可学习/可抑制（SIREN 可学习频率 vs 固定 FF） |
+| 容量修复点式模型 | exp307（1.34M 超 FNO 4.2M） | 点式模型不是死路；基的选择与容量是关键变量 |
+| KAN 逐点增益为零 | exp303 | 不含 KAN 的新骨架优先（TKNO 的 KAN 部分需按此证据剥离） |
+| 权重/阈值/ramp 杠杆已吃满 | exp306 | 本轮只做架构侧 |
+
+### 5.1 2025–2026 直接相关文献（同任务外部锚点）
+
+- **TKNO（Transformer-KAN Neural Operator）**，[arXiv:2511.19114](https://arxiv.org/abs/2511.19114)（ICML 2026 海报，[Ding & Zhang 等](https://icml.cc/virtual/2026/poster/63648)）——**与本问题同任务**：非线性 GS 方程、LCFS 形状参数 → ψ、EXL-50U 部署（TensorRT，RMSE < 1.3%）。五种架构基准中胜出：监督 0.25%、半监督（100 点锚 + PDE 约束）0.48% 且 OOD 最稳（退化 8.9× vs 监督 39.8×）；纯物理无监督把残差降 ~4 个数量级。代码 [github.com/dsqzhou/physics-anchored-gse](https://github.com/dsqzhou/physics-anchored-gse)。
+- **TCV PINO**，[arXiv:2606.09487](https://arxiv.org/abs/2606.09487)（Grandin 等）——改型 DeepONet 部署到 TCV 真实等离子体控制系统（10 kHz 形状控制，<100 μs 推理）：分支吃磁测量、主干吃空间坐标，模块化 = 任意碰撞点评估；物理损失经 AD 求 ψ/B_r/B_z/j。**外部验证 exp304/307 的 DeepONet 路线**（部署级可行性）。
+- **FNO 自由边界 DN**，[arXiv:2608.05555](https://arxiv.org/abs/2608.05555)（Krastev）——FreeGS 双零位形，参数 + **X 点坐标** → ψ：0.05% rel L2、X 点 0.2 cm、2.77 ms GPU。FNO 族上限的外部锚点（我们 0.729% 的差距 = 输入信息量 [11 线圈 vs 直接 X 点] + 数据规模，非骨架问题）。
+- SUNIST-2（2025-10，IAEA）延续物理约束 DeepONet——与 exp304 同路线。
+
+### 5.2 新候选架构（按过滤准则排序）
+
+| 候选 | 文献 | 架构要点 | 假设（对照系列证据） | 实现风险 |
+|---|---|---|---|---|
+| **F-UFNO**（因子化谱） | [FFNO 2111.13802](https://arxiv.org/abs/2111.13802)、[U-FFNO 2025](https://www.sciencedirect.com/science/article/abs/pii/S0898122125003013) | 谱权重 W₂D[m1,m2] → W₁D[m1]+W₁D[m2]（两次 1D FFT）；同预算谱参数 ~1/10，模态/深度可 4× | 直接扩展获胜架构；exp305 已证模态有用（16→20，Ip −14%） | 低：只改 SpectralConv2dR，归因 = F-UFNO vs exp305 |
+| **AFNO-UFNO**（自适应谱） | [AFNO 2111.13587](https://arxiv.org/abs/2111.13587)（FourCastNet） | 谱域每 mode MLP（跨 mode 共享，块对角）+ 软阈值稀疏（LASSO 式，λ 可学） | 静态复权重是上限 → 输入自适应滤波 + 稀疏正则能再降 | 中：FFT 后逐 mode MLP，参数 ≈ FNO 级 |
+| **TKNO-lite**（Transformer 算子，去 KAN） | [2511.19114](https://arxiv.org/abs/2511.19114) | patch 嵌入 18→d（65²→33² token，控注意力成本）+ N× block（LayerNorm→全局注意力→MLP）→ proj 2 通道 | 同任务文献胜出者；全局混合不依赖谱/深度；**KAN 部分按 exp303 剥离** | 高：N=500 数据饥饿；注意力成本用 patch-2 控制 |
+| **POD-DeepONet** | [Lu 2022 POD-DeepONet](https://export.arxiv.org/pdf/2403.18735)（综述） | SVD(500 训练输出) → top-p 基 φ_k；branch 16 标量 → p 系数；ψ = Σb_k φ_k + φ₀ | 椭圆型光滑解低秩先验；样本高效（参数数万级）；与 exp307"容量加大"互补 | 中：线性基 vs X 点拓扑移动（X 点非线性漂移可能需多模态）；SVD 实现易 |
+| **SIREN trunk**（exp308 修复线） | [SIREN 2020](https://arxiv.org/abs/2006.09661)、2025 自适应变体（可学习频率/振幅） | trunk 首层 sin(ω·x+b)，ω 可学习 + 尺度初始化 | 修复 exp308：可学习频率从低频起步，规避固定 32π 注入 | 低：exp308 README §6 修复方向 (d) |
+| **M2NO**（暂缓，留档） | [2406.04822](https://arxiv.org/abs/2406.04822)（KDD 2026） | 多重网格 V-cycle + multiwavelet 限制/延拓算子（H, Hᵀ 数学构造） | 椭圆型方程经典解法结构；65→33→17→9→5 级数与 multigrid 完美匹配 | 高：multiwavelet 基实现成本大；结构上与 UFNO 编码器-解码器重叠 |
+
+### 5.3 建议实验矩阵（exp309+，N=500、exp102 口径、全部手写）
+
+| 实验 | 骨架 | 归因口径 |
+|---|---|---|
+| exp309_fufno | F-UFNO | vs exp305（UFNO tuned，0.7147%）：增量 = 因子化模态扩展 |
+| exp310_afno_ufno | AFNO-UFNO | vs exp302/305：增量 = 自适应谱混合 |
+| exp311_tkno_lite | TKNO-lite | vs exp302/304：全局注意力 vs 谱混合的对照 |
+| exp312_pod_deeponet | POD-DeepONet | vs exp307（0.7575%）：低秩基 vs 学习 trunk |
+| exp313_siren_trunk（可选） | SIREN trunk | vs exp308：修复线，归因 = 可学习频率 |
+
+> 数据侧注意：exp201/202/203 证明 v5/dn 上不同骨架下限 ~0.7%——F-UFNO/AFNO 若只到
+> 0.70–0.72% 属"数据下限主导"，需 3-seed 平均才能谈显著性；TKNO-lite 的文献 0.25%
+> 不可直接对照（输入信息量/数据定义不同）。
