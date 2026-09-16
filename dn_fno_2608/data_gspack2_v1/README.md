@@ -1,14 +1,14 @@
 # data_gspack2_v1 — gspack2_TRAE 版 MAST 混合位形数据集（DN+SN，18ch coil 输入）
 
-> 生成日期：2026-08-24
+> 生成日期：2026-08-24 ｜ 代码：`gs_gspack2_dn_fno_2608.generate_g2_dataset`
+> （`--config {dn,sn}` + `--machine mast_g2`）；求解包位于 `D:\D_F\Fusion\AI\PINN\gspack2_TRAE`
+> （gspack v2.0.0）
 > 用途：exp201（做法1 RHS 物理残差）/ exp202（做法2 两阶段）的数据——与 exp103/104
 > 同口径的 **数据源替换实验**：管线（train/evaluate/data/model/loss）零改动，
-> 仅把 freegs 生成的 data_v5 换成 **gspack2_TRAE（gspack v2.0.0）** 求解包生成
-> 的同构数据（26 键 npz schema、65² 网格、MAST 11 线圈 1:1 复刻、18 输入通道）
-> 代码：`gs_gspack2_dn_fno_2608.generate_g2_dataset`（`--config {dn,sn}` +
-> `--machine mast_g2`）；求解包位于 `D:\D_F\Fusion\AI\PINN\gspack2_TRAE`
+> 仅把 freegs 生成的 data_v5 换成本数据集（同 26 键 npz schema、65² 网格、
+> MAST 11 线圈 1:1 复刻、18 输入通道）
 > 探针报告：`_probe_dn.json`/`_probe_sn.json`
-> 结果：exp201（做法1）test 1.197%、exp202（做法2）1.316%——与本数据源的
+> 结果：exp201（做法1）test **1.197%**、exp202（做法2）**1.316%**——与本数据源的
 > 可达误差下限 ~1.1% 一致（v5 对应 0.703%/0.76%，分布等价、误差下限更高，
 > 诊断链见 exp201 README §6）
 
@@ -17,13 +17,13 @@
 | 项 | 值 |
 |---|---|
 | 机器 | **MAST（gspack 版 1:1 复刻）**：11 控制线圈（P2U/P2L/P3U/P3L/P4U/P4L/P5U/P5L/P6U/P6L + P1 Solenoid），**无墙**；几何 = freegs `machine.py` MAST()（machine.py:1408-1428），turns=1、control=True |
-| 求解 | gspack.Equilibrium（von Hagenow 自由边界，order=2/method=lu）+ ConstrainPaxisIp + constrain(xpoints/isoflux, gamma=1e-12) + picard.solve（rtol=1e-3, maxits=80） |
+| 求解 | gspack.Equilibrium（von Hagenow 自由边界，order=2/method=lu）+ ConstrainPaxisIp + constrain(xpoints/isoflux, gamma=1e-12) + picard.solve（rtol=1e-3, **maxits=80**） |
 | 位形 | DN（双 X 点）+ SN（单 X 点），**按配置分开落盘**（`dn/`、`sn/`） |
 | 网格 | 65²，R∈[0.1,2.0] m、Z∈[-2.0,2.0] m（与 data_v5 网格逐点相同） |
-| 规模 | **首批** dn、sn 各 train 500（seed 123）/ val 500（seed 456）/ test 500（seed 789）；**可补数据**（同 seed 更大 n → 新 chunk → merge，见 §9） |
+| 规模 | dn、sn 各 train 500（seed 123）/ val 500（seed 456）/ test 500（seed 789），6 split 全部满接受；**可补数据**（top-up，§9） |
 | 输入通道 | **18ch**（coil 主用，exp201/202）——与 exp103/104 完全同构（2 网格 + 5 params + 11 线圈电流，**无 config 通道**） |
 | 目标 | `psi_total`（65²，z-score） |
-| 新增字段 | `config`（0=DN, 1=SN）——字段存在但不加载（use_config=False，同 exp103） |
+| 新增字段 | `config`（(N,1)，0=DN, 1=SN）——字段存在但不加载（use_config=False，同 exp103） |
 
 ## 2. 目录与文件
 
@@ -35,19 +35,42 @@ dn_fno_2608/data_gspack2_v1/
 └── README.md
 ```
 
-每配置独立 out-dir（同 data_v5 布局）——chunk 断点续跑按 (config, split, chunk_idx)
-定位（共用 out-dir 会让 sn 的 chunk 与 dn 撞号被整块跳过，见 §8.4 教训）。
-npz 不入 git（`.gitignore`），`run_generate_g2.sh` 一键再生成。
+每配置独立 out-dir（同 data_v5 布局）——chunk 断点续跑按 (config, split,
+chunk_idx) 定位（共用 out-dir 会让 sn 的 chunk 与 dn 撞号被整块跳过，见 §8.2
+教训）。npz 不入 git（.gitignore），`run_generate_g2.sh` 一键再生成。
 
-## 3. 字段说明（npz keys，26 个，与 data_v5 逐键一致）
+## 3. 字段说明（npz keys，26 个，与 data_v5 逐键同构）
 
-data_v4 全部字段 + `config`（(N,1)，0=DN / 1=SN）。**x_coords 固定 4 通道**：
-SN 样本上 X 点对存 **(0.0, 0.0) 占位**（恒值通道 → z-score 后为 0；本实验无
-config 通道时位形信息由 11 线圈电流承载，up=(0,0) 占位通道恒 0 不参与）。
-SN 的诊断字段形状缩小：xpt_constraint_res (2,)、isoflux_res (1,)、
-psi_at_constraints [p_lo, p_anc]；`xpts_actual` 行数：DN 2 行 / SN 1 行
-（混合拼接时 NaN-pad 到最大行数）。与 data_v5 的逐键差异仅数值来源（freegs→
-gspack），键名/形状/语义完全一致。
+data_v4 全部 25 字段 + `config`。**x_coords 固定 4 通道**：SN 样本上 X 点对存
+**(0.0, 0.0) 占位**（恒值通道 → z-score 后为 0；本实验无 config 通道时位形信息
+由 11 线圈电流承载，up=(0,0) 占位通道恒 0 不参与）。SN 的诊断字段形状缩小：
+xpt_constraint_res (N,2)、isoflux_res (N,1)、psi_at_constraints (N,2)（[p_lo,
+p_anc]）；`xpts_actual` 行数 DN 2 行 / SN 1 行（混合拼接时 NaN-pad 到最大行数）。
+与 data_v5 的逐键差异仅数值来源（freegs → gspack），键名/形状/语义完全一致。
+
+| 字段 | 形状（DN） | 形状（SN） | 含义 | 是否模型输入 |
+|---|---|---|---|---|
+| `psi_total` | (N,65,65) | 同 | 总极向磁通（**训练目标**） | — |
+| `psi_plasma` / `psi_plasma_norm` / `psi_coils` | (N,65,65) | 同 | 磁通分量 | 否（PINO 预留） |
+| `R`, `Z` | (65,65) | 同 | 物理坐标网格 | 通道 1–2 |
+| `mask` | (N,65,65) | 同 | core_mask | 否 |
+| `params` | (N,5) | 同 | [Ip, paxis, fvac, alpha_m, alpha_n] | 通道 3–7 |
+| `coil_currents` | (N,11) | 同 | 11 线圈电流（顺序见 §4） | 通道 8–18 |
+| `x_coords` | (N,4) | 同 | [R_lo, Z_lo, R_up, Z_up]；SN 的 up=(0,0) 占位 | 否（exp201/202 不加载） |
+| `anchor` | (N,2) | 同 | isoflux 锚点 [R,Z] | 否 |
+| `config` | (N,1) | 同 | 0=DN / 1=SN（**不加载**，仅标注） | **否** |
+| `greens` | (N,11,65,65) | 同 | 线圈 Green 函数（`eq._coil_psi_unit`，逐样本存储） | 否（PINO 预留） |
+| `dpdpsi`, `FdFdpsi` | (N,65,65) | 同 | GS 残差 RHS 分量（**exp201 做法1 用**） | RHS 物理项 |
+| `axes` | (N,4) | 同 | [R_axis, Z_axis, psi_bndry, psi_axis] | 否（评估用） |
+| `L`, `Beta0` | (N,1) | 同 | 电感 / 比压 | 否 |
+| `solve_time` | (N,1) | 同 | 求解耗时 | 否 |
+| `xpts_actual` | (N,2,3) | **(N,1,3)** | 实际 X 点 [R,Z,psi] | 否（评估几何真值） |
+| `o_point` | (N,3) | 同 | 实际 O 点 [R,Z,psi]（位置过滤后取 psi 最大） | 否 |
+| `xpt_constraint_res` | (N,4) | **(N,2)** | 目标处 Br/Bz（T） | 否（诊断） |
+| `isoflux_res` | (N,2) | **(N,1)** | psi(X 点)−psi(锚点)（Wb） | 否（诊断） |
+| `psi_at_constraints` | (N,3) | **(N,2)** | psi(lo)[, psi(up)], psi(锚点)（Wb） | 否（诊断） |
+| `n_iter` | (N,1) | 同 | Picard 迭代数（DN ~10 / SN ~44） | 否（诊断） |
+| `psi_relchange_final` | (N,1) | 同 | 末次 psi 相对变化（全部 ≤1e-3） | 否（诊断） |
 
 ## 4. 输入通道明细（18ch，同 exp103）
 
@@ -80,21 +103,27 @@ max diff 3.2e-8 Wb**（data_v5 同为 1e-8 量级）。
 
 ## 5. 如何调用
 
+### 5.1 直接加载
+
 ```python
 import numpy as np
 d = np.load("dn_fno_2608/data_gspack2_v1/dn/train.npz")
 cfg = d["config"]           # (500,): 0=DN / 1=SN
 coils = d["coil_currents"]  # (500, 11): 顺序见 §4
+rhs = d["dpdpsi"], d["FdFdpsi"]  # GS 残差 RHS 分量（做法1 物理）
 ```
+
+### 5.2 训练 / 评估（exp201/202 实际命令）
 
 ```bash
 PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 
-# exp201 训练（coil 18ch，DN+SN 混合，逗号拼接；stats 全池 1000 计算）
+# exp201 训练（做法1 rhs，coil 18ch，DN+SN 混合，逗号拼接；stats 全池 1000 计算）
 "$PY" -u -m gs_pino_fno_phys.train_pino --mode rhs \
   --train-data dn_fno_2608/data_gspack2_v1/dn/train.npz,dn_fno_2608/data_gspack2_v1/sn/train.npz \
   --val-data dn_fno_2608/data_gspack2_v1/dn/val.npz,dn_fno_2608/data_gspack2_v1/sn/val.npz \
   --n-train 500 --seed 1 --epochs 800 --phys-weight 0.1 --out-dir <out>
+# exp202 两阶段：--mode twostage --phys-weight 0.1 --ip-weight 1.0 --j-weight 1.0
 # 评估（分桶：--test-data 单传 dn 或 sn 文件）
 "$PY" -u -m gs_pino_fno_phys.evaluate_pino \
   --test-data dn_fno_2608/data_gspack2_v1/sn/test.npz \
@@ -130,7 +159,7 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 对比 data_v5（freegs）：DN 100%、SN 100%；gspack 的 DN 原始接受率略低
 （93.75% vs 100%），生成时以重试补齐——**6 个 split 全部 500/500 接受**。
 
-### 7.3 接受检查（= v5 全量 + g2 新增两项）
+### 7.3 接受检查（= data_v5/v4 全部 7 项 + g2 新增两项）
 
 1. **SN 分离面 X 点判据**：psi ≥ psi_bndry − 1e-6 的 X 点数 == 1（DN == 2）；
    psi_bndry 按 v5 口径重算（DN = 两 X 点 psi 均值；gspack 内置 = 轴下最大单
@@ -139,13 +168,13 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
    gspack find_critical 的 O 点**按距网格中心排序**（非 psi）——本生成器过滤
    后重排 opt 使 opt[0]=轴，过滤空则拒绝（v5 DN 直接用 opt[0]）
 3. **收敛门（g2 新增）**：picard 最后相对 psi 变化 ≤ 10×rtol（=1e-2）；
-   gspack 不 raise、跑满 maxits=80 后返回——门在循环后判（成本见 §8.3）
+   gspack 不 raise、跑满 maxits=80 后返回——门在循环后判（成本见 §8.4）
 4. **SN midplane 健康门（g2 新增，v5 无）**：分离面中平面交点
    R_hi ≥ R_anchor − 0.05 且 R_lo < R_axis，且 <2 次穿越的退化回退
    (Rmin,Rmax) 直接拒绝——防 SN 上瓣退化（v6 §8.1 同类病理）；
    探针实测门拒绝 0/80（名义解中平面交点恒在锚点附近，门是防病态的兜底）
-5. 其余 = v5 全部：Ip 误差 ≤10%、L 有限、0<Beta0<1、isoflux 残差 ≤0.35、
-   X 点偏差 ≤0.10、锚距 ≥0.15、线圈凸包 margin 0.05、core depth ≥0.005、
+5. 其余 = v5/v4 全部：Ip 误差 ≤10%、L 有限、0<Beta0<1、isoflux 残差 ≤0.35、
+   X 点偏差 ≤0.10、锚距 ≥0.15、线圈凸包 margin 0.05、core 深度 ≥0.005、
    MAST 无墙 → --require-wall 忽略
 
 ### 7.4 生成实测（24 核，batch_size=1）

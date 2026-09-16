@@ -1,17 +1,17 @@
 # data_gspack2_v2 — gspack2_TRAE 版 MASTU_simple 五配置数据集（21ch，129²）
 
-> 生成日期：2026-08-24
+> 生成日期：2026-08-24 ｜ 代码：`gs_gspack2_dn_fno_2608.generate_dn_g3_dataset`
+> （`--config {dn,sn,snow_single,snow_double,limiter}` + `--machine mastu_g3`）；
+> 求解包位于 `D:\D_F\Fusion\AI\PINN\gspack2_TRAE`（gspack v2.0.0）
 > 用途：exp203（做法1 RHS 物理残差）的数据——与 exp105/106 同口径的
 > **数据源替换 + 数据质量改进实验**：管线（train/evaluate/data/model/loss）
-> 零改动，仅把 freegs_snow 生成的 data_v6_clean 换成 **gspack2_TRAE
-> （gspack v2.0.0）** 生成的同构数据（34 键 npz schema、129² 网格、
-> MASTU_simple 26 物理线圈 → 14 控制单元 1:1 复刻、21 输入通道），
-> 并从**生成侧修复 data_v6 的 SN 数据质量差**（磁轴偏下、上瓣薄、
-> 中平面外翻，exp012 §7.1 诊断、sn 病态率 18.4%）
-> 代码：`gs_gspack2_dn_fno_2608.generate_dn_g3_dataset`（`--config
-> {dn,sn,snow_single,snow_double,limiter}` + `--machine mastu_g3`）；
-> 求解包位于 `D:\D_F\Fusion\AI\PINN\gspack2_TRAE`
+> 零改动，仅把 freegs_snow 生成的 data_v6_clean 换成本数据集（同构 129² 网格、
+> MASTU_simple 26 物理线圈 → 14 控制单元 1:1 复刻、21 输入通道），并从**生成侧
+> 修复 data_v6 的 SN 数据质量差**（磁轴偏下、上瓣薄、中平面外翻，exp012 §7.1
+> 诊断、sn 病态率 18.4%）
 > 探针报告：`_probe/probe_{cfg}.json`；filter_v6 独立复核：`scores.json`
+> 结果：exp203 test rel_l2_total **2.963%**（对照 exp105 2.362%）——数据质量
+> 目标达成（SN 病态 0）、误差目标未达成（诚实负面，§8）
 
 ## 1. 数据集速览
 
@@ -21,33 +21,58 @@
 | 求解 | gspack.Equilibrium（von Hagenow 自由边界，order=2/method=lu）+ ConstrainPaxisIp + constrain(xpoints/isoflux/雪点二阶, gamma) + picard.solve / **雪点松弛 Picard（blend=0.3）** |
 | 位形 | **五配置**（DN/SN/雪花单/雪花双/限制器），按配置分开落盘（`dn/`、`sn/`、…） |
 | 网格 | 129²，R∈[0.1,2.0] m、Z∈[-2.0,2.0] m（与 data_v6 逐点相同） |
-| 规模 | **train 各 500（seed 123）/ val 各 100（seed 456）/ test 各 200（seed 789）**——val/test 对齐 data_v6_clean → exp203 与 exp105 逐桶 1:1 对比 |
+| 规模 | dn/snow_single/snow_double/limiter 各 train 500（seed 123）/ val 100（seed 456）/ test 200（seed 789）；**sn 实际 497/98/200**（重试预算耗尽，§7.4）；val/test 对齐 data_v6_clean → exp203 与 exp105 逐桶 1:1 对比 |
 | 输入通道 | **21ch**（R,Z + 5 params + 14 单元电流，**无 config 通道**）——与 exp105/106 完全同构 |
 | 目标 | `psi_total`（129²，z-score） |
-| 新增字段 | `gs_true`/`midplane_ratio`/`zaxis_ratio`（质量指标无条件写入，见 §3.1） |
+| 新增字段 | `gs_true`/`midplane_ratio`/`zaxis_ratio`（质量指标无条件写入，§3.1） |
 
 ## 2. 目录与文件
 
 ```
 dn_fno_2608/data_gspack2_v2/
-├── dn/  train.npz / val.npz / test.npz
-├── sn/  ...        （五配置同构；+ 分块目录 chunks）
+├── dn/  train.npz / val.npz / test.npz    # 五配置同构（+ 分块目录 chunks）
+├── sn/  ...
 ├── snow_single/ ...
 ├── snow_double/ ...
 ├── limiter/   ...
 ├── _probe/probe_{cfg}.json   # 探针（80 样本/配置，原始接受率 + 门分布）
 ├── scores.json               # filter_v6 独立判据复核（15 split，移除 0 条）
+├── log_{cfg}_{split}.txt     # 生成日志（sn 另有 log_probe_sn_maxits200.txt）
 └── README.md
 ```
 
 每配置独立 out-dir（同 data_v5/data_gspack2_v1 布局）——chunk 断点续跑按
-(config, split, chunk_idx) 定位。npz 不入 git（`.gitignore`），
+(config, split, chunk_idx) 定位。npz 不入 git（.gitignore），
 `run_generate_g3.sh` 一键再生成。
 
-## 3. 字段说明（npz keys，34 个 = v6 全键 + 3 新质量指标）
+## 3. 字段说明（npz keys，32 个 = data_v6 全键 + 3 新质量指标）
 
-data_v6 全部字段（含 `config`(N,1) 0-4、x_coords、xpts_actual、
-o_point、anchor、snowflake_res 等）+ 新质量指标：
+data_v6 全部字段（含 `config`(N,1) 0-4、`x_coords`、`xpts_actual`、`o_point`、
+`anchor`、`snowflake_res` 诊断等）+ 3 个新质量指标（§3.1）。SN 的诊断字段形状
+缩小（xpts_actual (N,1,3)、xpt_constraint_res (N,2)、isoflux_res (N,1)、
+psi_at_constraints (N,2)），与 data_v6/v5 的 SN 口径一致。逐键形状：
+
+| 字段 | 形状（DN） | 含义 | 是否模型输入 |
+|---|---|---|---|
+| `psi_total` | (N,129,129) | 总极向磁通（**训练目标**） | — |
+| `psi_plasma` / `psi_plasma_norm` / `psi_coils` | (N,129,129) | 磁通分量 | 否（PINO 预留） |
+| `R`, `Z` | (129,129) | 物理坐标网格 | 通道 1–2 |
+| `mask` | (N,129,129) | core_mask | 否 |
+| `params` | (N,5) | [Ip, paxis, fvac, alpha_m, alpha_n] | 通道 3–7 |
+| `coil_currents` | (N,14) | 14 控制单元电流（顺序见 §3.2） | 通道 8–21 |
+| `config` | (N,1) | 位形编码 0-4（**不加载**，仅标注） | **否** |
+| `x_coords` | (N,4) | X 点/雪点目标坐标（limiter 占位） | 否 |
+| `anchor` | (N,2) | isoflux 锚点 [R,Z]（limiter 无） | 否 |
+| `greens` | (N,14,129,129) | 线圈 Green 函数（`eq._coil_psi_unit`，逐样本存储） | 否（PINO 预留） |
+| `dpdpsi`, `FdFdpsi` | (N,129,129) | GS 残差 RHS 分量（**exp203 做法1 用**） | RHS 物理项 |
+| `axes` | (N,4) | [R_axis, Z_axis, psi_bndry, psi_axis] | 否（评估用） |
+| `L`, `Beta0` | (N,1) | 电感 / 比压 | 否 |
+| `solve_time` / `n_iter` / `psi_relchange_final` | (N,1) | 求解耗时 / 迭代数 / 末次相对变化 | 否 |
+| `xpts_actual` | (N,2,3) / SN·snow_single (N,1,3) / limiter (N,0,3) | 实际 X 点 [R,Z,psi] | 否（评估几何真值） |
+| `o_point` | (N,3) | 实际 O 点 [R,Z,psi] | 否 |
+| `xpt_constraint_res` / `isoflux_res` / `psi_at_constraints` | (N,4)/(N,2)/(N,3) | 约束残差诊断（SN/limiter 缩形） | 否 |
+| `wall_contact` / `wall_contact_excess` / `inwall_sep_frac` | (N,1) | 触壁标注（深触壁已排除） | 否 |
+| `gs_true` / `midplane_ratio` / `zaxis_ratio` | (N,1) | **新增质量指标**（§3.1） | 否（质量审计） |
 
 ### 3.1 新质量指标（filter_v6.py 同款公式，生成侧无条件写入）
 
@@ -63,34 +88,40 @@ o_point、anchor、snowflake_res 等）+ 新质量指标：
 |---|---|---|---|
 | 1 | R | 网格 R 坐标（[-1,1]） | 固定 129² 网格（= v6） |
 | 2 | Z | 网格 Z 坐标（[-1,1]） | 固定 129² 网格（= v6） |
-| 3-7 | Ip / paxis / fvac / alpha_m / alpha_n | 剖面参数（Pa/A/Wb·m⁻¹） | params |
-| 8-21 | I_Solenoid, I_Pc, I_Px, I_D1, I_D2, I_D3, I_Dp, I_D5, I_D6, I_D7, I_P4, I_P5, I_P61, I_P62 | 14 单元电流 (A) | coil_currents |
+| 3-7 | Ip / paxis / fvac / alpha_m / alpha_n | 剖面参数（A/Pa/Wb·m⁻¹） | params[0:5] |
+| 8-21 | I_Solenoid, I_Pc, I_Px, I_D1, I_D2, I_D3, I_Dp, I_D5, I_D6, I_D7, I_P4, I_P5, I_P61, I_P62 | 14 单元电流 (A) | coil_currents[0:14] |
 
 线圈名/顺序 = data_v6 通道序（MASTU_simple 14 控制单元）。greens 单位响应
 = `eq._coil_psi_unit`（构造时置 current=1.0 的缓存；每单元 = Σ sign·子线圈
 单位响应）；**恒等式 Σ_k I_k·G_k ≡ psi_coils 实测 max diff ~3e-8 Wb**
-（v6 同为 1e-8 量级；S2 复核 50 样本/配置 ≤1e-6）。
+（v6 同为 1e-8 量级；S2 复核 50 样本/配置 ≤1.2e-7）。
 
 ## 4. 如何调用
+
+### 4.1 直接加载
 
 ```python
 import numpy as np
 d = np.load("dn_fno_2608/data_gspack2_v2/dn/train.npz")
 cfg = d["config"]           # (500,): 0-4
 coils = d["coil_currents"]  # (500, 14): 顺序见 §3.2
+q = d["gs_true"], d["midplane_ratio"], d["zaxis_ratio"]  # 质量指标
 ```
+
+### 4.2 训练 / 评估（exp203 实际命令）
 
 ```bash
 PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
+G3=dn_fno_2608/data_gspack2_v2
 
-# exp203 训练（rhs，五配置混合，逗号拼接；stats 全池 2500 计算）
+# exp203 训练（做法1 rhs，五配置混合，逗号拼接；stats 全池 2497 计算）
 "$PY" -u -m gs_pino_fno_phys.train_pino --mode rhs \
-  --train-data dn_fno_2608/data_gspack2_v2/{dn,sn,snow_single,snow_double,limiter}/train.npz \
-  --val-data dn_fno_2608/data_gspack2_v2/{dn,sn,snow_single,snow_double,limiter}/val.npz \
+  --train-data $G3/dn/train.npz,$G3/sn/train.npz,$G3/snow_single/train.npz,$G3/snow_double/train.npz,$G3/limiter/train.npz \
+  --val-data $G3/dn/val.npz,$G3/sn/val.npz,$G3/snow_single/val.npz,$G3/snow_double/val.npz,$G3/limiter/val.npz \
   --n-train 500 --seed 1 --epochs 800 --phys-weight 0.1 --out-dir <out>
 # 评估（分桶：--test-data 单传各配置文件，--machine mastu_simple）
 "$PY" -u -m gs_pino_fno_phys.evaluate_pino \
-  --test-data dn_fno_2608/data_gspack2_v2/sn/test.npz \
+  --test-data $G3/sn/test.npz \
   --checkpoint <out>/best.pt --out-dir <out>/eval_sn --machine mastu_simple
 ```
 
@@ -98,12 +129,12 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 
 | 脚本 | 用途 |
 |---|---|
-| `run_generate_g3.sh` | 探针 + 全量生成一键（`probe`/`gen`/`topup`/`all`；首批 15 split **~5 h @ 16 核**，见 §6.3） |
+| `run_generate_g3.sh` | 探针 + 全量生成一键（`probe`/`gen`/`topup`/`all`；首批 15 split **~5 h @ 16 核**，§7.4） |
 | `probe_g3.py` | 探针：原始接受率 + 新门分布（`--config {dn,sn,snow_single,snow_double,limiter} --n 80`） |
 | `validate_g3.py` | 数据校验（S2）：网格/通道/greens/Ip/filter_v6 复核/SN 质量对比 |
 | `run_exp203_pino.sh` | exp203 训练 + 六桶评估 |
 
-## 6. 生成设置与统计
+## 6. 生成设置
 
 ### 6.1 采样口径（= data_v6 MASTU_simple）
 
@@ -116,7 +147,31 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 - 重试：拒绝时整参重采样（max_retries=20，种子 `seed*100_000+i+attempt*1_000_000`）；
   joblib `batch_size=1`
 
-### 6.2 探针校准（80 样本/配置，max_retries=1 = 原始接受率，seed 123）
+### 6.2 接受检查（v4/v5/v6 全部 7 项 + 收敛门 + SN 质量三件套硬门）
+
+1. v6 全部 7 项：磁轴三角形内 / 线圈凸包 margin 0.05 / isoflux ≤0.35×core /
+   X 点偏差 ≤0.10 / 锚距 ≥0.15 / core 深度 ≥0.005 / 墙内（MASTU 有墙）；
+2. **收敛门**：psi_relchange_final ≤ 10×rtol（=1e-2，g2 先例）；snow 用
+   200 迭代、其余 80；
+3. **SN 质量三件套硬门**（§3.1）：gs_true ≤15（全配置）+ sn 加 midplane_ratio
+   ≥0.05 与 zaxis_ratio ≤0.5——data_v6 需生成后 filter_v6 清洗的病态，
+   此处生成侧直接拒绝；
+4. **SN 磁轴过滤**：gspack find_critical 的 O 点按距网格中心排序（非 psi）
+   → 按 v6 位置过滤（lo[0]<R<anchor[0] 且 |Z|<|Z_lo|）取 max psi，opt 重排。
+
+### 6.3 求解要点（与 v6/freegs_snow 的关键差异，已实证）
+
+1. **雪点必须零电流初始 + 松弛 Picard**（详见 §8.2）——freegs_snow 的
+   MASTU_INIT_CURRENTS 种子在 gspack 下进入上瓣假解并周期-3 极限环振荡；
+   零电流 + blend=0.3（混合在 constrain 之后）稳定收敛到与 freegs_snow
+   seed 分支**同一解**（X 点距雪点目标 6-13 mm）
+2. **limiter 两步法**：`Equilibrium(check_limited=True, limiter_mode="flood")`
+   → step1 钉轴 xpoints → step2 `constrain=None`（rtol 5e-3 maxits 100）+
+   触壁自洽检查
+
+## 7. 生成统计
+
+### 7.1 探针校准（80 样本/配置，max_retries=1 = 原始接受率，seed 123）
 
 | 配置 | raw 接受率 | 门后 | solve 均/最 (s) | n_iter 均/最 | 关键质量 |
 |---|---|---|---|---|---|
@@ -131,10 +186,20 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 - \|Z_axis\|/\|Z_lo\|：v6 病态特征"磁轴偏下" → g3 探针 max 0.36（门 0.5 全过）
 - gs_true>15：g3 探针 5/368 样本（1.4%），生成侧硬门拒绝
 - SN 门后接受率 25% < v6 raw 55%——但 v6 的 55% 含 18.4% 病态（有效
-  ~45%）；g3 的 25% **全部高质量**。按计划"质量优先、接受率允许低于 v6"，
+  ~45%）；g3 的 25% **全部高质量**。按"质量优先、接受率允许低于 v6"计划，
   生成侧用重试 20 补齐
 
-**首批 15 split 实际生成耗时（@ 16 核，n_jobs=16，总 ~5 h）**：
+### 7.2 首批 15 split 实际规模（npz 实测，2026-09-16 核对）
+
+| 配置 | train | val | test | 目标 |
+|---|---|---|---|---|
+| dn | 500 | 100 | 200 | 500/100/200 ✓ |
+| **sn** | **497** | **98** | 200 | **train/val 差 3/2**（重试预算耗尽，见 §7.4） |
+| snow_single | 500 | 100 | 200 | ✓ |
+| snow_double | 500 | 100 | 200 | ✓ |
+| limiter | 500 | 100 | 200 | ✓ |
+
+### 7.3 首批生成耗时（@ 16 核，n_jobs=16，总 ~5 h）
 
 | 配置 | train 500 | val 100 | test 200 | 小计 |
 |---|---|---|---|---|
@@ -148,21 +213,16 @@ PY="C:/Users/HP/.conda/envs/torch5060/python.exe"
 sn/snow_single 的接受率与单解耗时，非卡死——S1 修复的 cupy 后端问题后
 全程无异常）
 
-### 6.3 求解要点（与 v6/freegs_snow 的关键差异，已实证）
+### 7.4 诚实记录：sn 未达目标规模
 
-1. **雪点必须零电流初始 + 松弛 Picard**（详见 §7.2）——freegs_snow 的
-   MASTU_INIT_CURRENTS 种子在 gspack 下进入上瓣假解并周期-3 极限环振荡；
-   零电流 + blend=0.3（混合在 constrain 之后）稳定收敛到与 freegs_snow
-   seed 分支**同一解**（X 点距雪点目标 6-13 mm）
-2. **收敛门**：psi_relchange_final ≤ 10×rtol（=1e-2，g2 先例）；snow 用
-   200 迭代、其余 80
-3. **SN 磁轴过滤**：gspack find_critical 的 O 点按距网格中心排序（非 psi）
-   → 按 v6 位置过滤（lo[0]<R<anchor[0] 且 |Z|<|Z_lo|）取 max psi，opt 重排
-4. **limiter 两步法**：`Equilibrium(check_limited=True, limiter_mode="flood")`
-   → step1 钉轴 xpoints → step2 `constrain=None`（rtol 5e-3 maxits 100）+
-   触壁自洽检查
+sn 门后接受率仅 25%，max_retries=20 的重试链在 train/val 耗尽后仍差 3/2 条
+（最终 497/98/200，§7.2）。**未用更低门槛凑数**（保持质量优先口径）；下游
+影响：exp203 混合 pool 实际 2497 而非 2500，val 1498——管线按实际行数加载，
+不影响训练正确性；如需满额可 `run_generate_g3.sh topup sn train 500 123`。
 
-## 7. 与 data_v6 的差异（freegs_snow → gspack2_TRAE）
+## 8. 与 data_v6 的差异、校验与教训
+
+### 8.1 差异总表（freegs_snow → gspack2_TRAE）
 
 | 项 | data_v6 (freegs_snow) | data_gspack2_v2 (gspack v2.0.0) |
 |---|---|---|
@@ -176,15 +236,14 @@ sn/snow_single 的接受率与单解耗时，非卡死——S1 修复的 cupy �
 | 接受率 | SN raw 55% | SN raw 28.75%（全高质量，重试补齐） |
 | greens | `coil.createPsiGreens` | `eq._coil_psi_unit`（Σ sign·子线圈，恒等式 3e-8） |
 
-### 7.1 已知差异（不影响训练正确性）
-
+已知差异（不影响训练正确性）：
 - **Ip 重构精度**：gspack 的 Jtor 数值积分离散与 freegs 略异 → 用
   dpdpsi/FdFdpsi 直算的 Ip 重构误差 ~5e-3（v6 ~3e-4，g2 同 5.8e-3 已知）。
   训练 RHS 由数据内 dpdpsi/FdFdpsi 直接计算，机制相同；exp203 的 Ip 相关
   指标（如 twostage）以数据重构口径为准（README 记录，不构成偏差）
-- psi_bndry 口径 ~1e-8 差异（同 g2 §8.1）
+- psi_bndry 口径 ~1e-8 差异（同 g2/g1）
 
-### 7.2 雪点求解问题与修复（2026-08-24 实证）
+### 8.2 雪点求解问题与修复（2026-08-24 实证）
 
 gspack 纯 Picard 在雪点问题上进入周期-3 极限环发散（rel 0.85→1.00→1.41
 循环）；freegs_snow 同参数收敛（n=63-71）——差异在 GS 求解器/等离子场
@@ -201,14 +260,14 @@ gspack 纯 Picard 在雪点问题上进入周期-3 极限环发散（rel 0.85→
    snow_single/snow_double 8/8 收敛正确下瓣（blend=0.5 收敛但落上瓣假解、
    0.7 慢）
 
-### 7.3 教训：接受率与质量
+### 8.3 教训：接受率与质量
 
 SN raw 28.75%（vs v6 55%）——初看倒退，但门分布揭示真相：v6 的 55% 含
 18.4% 病态（生成后需 filter_v6 清洗 27/200 test）；g3 的 28.75% 无病态、
 新门零拒绝（除 gs_true 3/80）。**接受率不是质量的替代品**——生成侧硬门
 把 SN 质量门槛前移，下游无需再清洗（scores.json 15 split 移除 0 条）。
 
-## 8. 数据校验（S2，2026-08-25 实测全通过）
+### 8.4 数据校验（S2，2026-08-25 实测全通过）
 
 `validate_g3.py` **ALL CHECKS PASS**：
 - 网格 vs data_v6 逐点 array_equal（129² R[0.1,2] Z[-2,2]）
@@ -229,22 +288,28 @@ SN raw 28.75%（vs v6 55%）——初看倒退，但门分布揭示真相：v6 �
 v6 的 27 条（test）正是 filter_v6 清洗/补足的判据命中——g3 从生成侧全部
 消除，下游无需再清洗。
 
-## 9. 补数据（top-up）
+### 8.5 结果参照（exp203 vs exp105，逐桶 1:1）
+
+exp203（本数据五配置混合，N=500 seed 1）：rel_l2_total **2.963%**
+（dn 3.02 / sn 7.72 / snow_single 1.64 / snow_double 1.00 / limiter 1.43）
+vs exp105（v6_clean）2.362%（sn 5.882%）——六桶全面差于 exp105；双向交叉
+评估证明差异在**数据侧固有且不互通**（同一模型跨数据 +1.28~+1.73pp）→
+**"更干净"≠"更容易学"**，质量与可学习性正交（详见 exp203 README）。
 
 ## 9. 补数据（top-up）
 
 **机制**：chunk 断点续跑 + merge 幂等重建（同 data_gspack2_v1 §9）。
 
 ```bash
-# 补 dn train 到 1500（同 seed 123）：只生成 chunk_001/002 → merge 重建
-bash dn_fno_2608/scripts/run_generate_g3.sh topup dn train 1500 123
+# 补 sn train 到 500（同 seed 123）：补齐 §7.4 的 3 条缺口
+bash dn_fno_2608/scripts/run_generate_g3.sh topup sn train 500 123
 ```
 
 - 生成侧确定性：样本 i 的种子 = `seed*100_000 + i`（重试
   `+attempt*1_000_000`，参数重采样 rng = `i_seed + 7_000_003`，与 v6 逐位
   一致）→ 行 0..N0-1 比特级不变；merge 按 idx 重读全部 chunk 重建
   `{split}.npz`，绝不就地追加（中断后重跑幂等）
-- **诚实记录：训练子集不具嵌套性**（同 g2 §9）：`nested_train_indices`
+- **诚实记录：训练子集不具嵌套性**（同 g2/g1）：`nested_train_indices`
   在池增长后子集会变化 → 重训 = 新实验条目（已训练 artifact 不受影响）
-- 数据容量：首批 15×（500/100/200）；top-up 上限任意（chunk 500/块，
-  `--n-samples` 给多大生成多大）
+- 数据容量：首批 15×（500/100/200，sn 497/98/200）；top-up 上限任意
+  （chunk 500/块，`--n-samples` 给多大生成多大）

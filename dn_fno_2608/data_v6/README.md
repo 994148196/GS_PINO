@@ -40,7 +40,7 @@ dn_fno_2608/data_v6/
 | `mask` | (N,129,129) | freegs critical.core_mask | 否 |
 | `params` | (N,5) | [Ip, paxis, fvac, alpha_m, alpha_n] | 通道 3–7 |
 | `coil_currents` | (N,14) | 14 线圈电流（顺序见 §4） | 通道 8–21 |
-| `config` | (N,) | 位形编码 0=dn 1=sn 2=snow_single 3=snow_double 4=limiter | **否**（仅标注/分桶） |
+| `config` | (N,1) | 位形编码 0=dn 1=sn 2=snow_single 3=snow_double 4=limiter | **否**（仅标注/分桶） |
 | `axes` | (N,4) | [R_axis, Z_axis, psi_bndry, psi_axis] | 否（评估用） |
 | `L`, `Beta0` | (N,) | 等离子体电感/比压 | 否 |
 | `solve_time`, `n_iter` | (N,) | 求解耗时/迭代数 | 否 |
@@ -50,7 +50,7 @@ dn_fno_2608/data_v6/
 | `anchor` | (N,2) | isoflux 锚点（**limiter 无**） | 否 |
 | `isoflux_res`, `xpt_constraint_res`, `psi_at_constraints` | — | 约束残差诊断 | 否 |
 | `dpdpsi`, `FdFdpsi` | (N,129,129) | GS 残差 RHS 分量 | 否（PINO 预留） |
-| `greens` | (14,129,129) | 线圈 Green 函数（全样本共用一份） | 否（PINO 预留） |
+| `greens` | (N,14,129,129) | 线圈 Green 函数（逐样本存储；几何固定 → 各样本数值相同） | 否（PINO 预留） |
 | `wall_contact` | (N,) | 是否触壁（0/1） | 否（标注） |
 | `wall_contact_excess` | (N,) | 超 psi_bndry 深度 / core 深度（>0.2 = 深触壁，生成时已排除） | 否（标注） |
 | `inwall_sep_frac` | (N,) | 分离面在壁内（R<0.244）穿越网格边比例（limiter 无语义） | 否（标注） |
