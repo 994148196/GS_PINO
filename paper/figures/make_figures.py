@@ -301,7 +301,7 @@ def fig5_comparison():
     # left: bar chart (renamed, no exp codes)
     ax = axes[0]
     labels = ["rel L2\nmean %", "rel L2\nmedian %", "Ip err\n%", "J (core)\n%"]
-    baseline = [0.84, 0.66, np.nan, np.nan]
+    baseline = [0.80, 0.67, np.nan, np.nan]
     scheme1 = [0.72, 0.59, np.nan, np.nan]
     scheme2 = [0.80, 0.64, 0.21, 1.36]
 
@@ -326,7 +326,7 @@ def fig5_comparison():
     # right: validation curves
     ax = axes[1]
     for folder, color, name in [
-            ("exp011_coil_input_v5/model_b18ch_coils_mix", "#b0b0b0", "baseline"),
+            ("exp107_pure_data_dn500", "#b0b0b0", "baseline"),
             ("exp101_pino_rhs_n500", "#7fb3d5", "scheme 1"),
             ("exp102_pino_twostage_n500", "#2e8b57", "scheme 2")]:
         try:

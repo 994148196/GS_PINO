@@ -16,6 +16,7 @@ outputs/
 # paper 仅正文不入库（图表、脚本、摘要、研究计划入库）
 paper/manuscript.md
 paper/manuscript.pdf
+paper/manuscript_cn*
 .trae/
 .vscode/
 Cerfon_Solovev-*.pdf
