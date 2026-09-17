@@ -13,10 +13,12 @@ venv/
 .ruff_cache/
 outputs/
 .claude/
-# paper 仅正文不入库（图表、脚本、摘要、研究计划入库）
-paper/manuscript.md
-paper/manuscript.pdf
-paper/manuscript_cn*
+# paper 整目录不入库（正文/图表/脚本/摘要/大纲/会议材料仅存本地）
+paper/
+
+# 模型权重不入库（best.pt 等，可由训练脚本再生成）
+*.pt
+*.pth
 .trae/
 .vscode/
 Cerfon_Solovev-*.pdf
